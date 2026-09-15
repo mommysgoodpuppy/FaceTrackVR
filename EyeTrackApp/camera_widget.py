@@ -420,11 +420,17 @@ class CameraWidget:
         eye_name = "LEFT" if self.eye_id == EyeId.LEFT else "RIGHT"
         tracker_name = getattr(eye_info.info_type, "name", str(eye_info.info_type))
         detector_name = str(diagnostics.get("detector_name", "")).upper()
+        model_rate_hz = float(diagnostics.get("model_rate_hz", 0.0) or 0.0)
+        debug_rate = bool(diagnostics.get("debug_rate", False))
 
         cv2.rectangle(annotated, (0, 0), (width, 42), (18, 20, 25), -1)
         state = "PUPIL LOCK" if locked else "PUPIL SEARCH"
         if detector_name:
             state += f"  {detector_name}"
+        if debug_rate:
+            state += " DEBUG"
+        if model_rate_hz > 0.0:
+            state += f" {model_rate_hz:.1f}HZ"
         self._outlined_text(
             annotated, f"{eye_name}  {tracker_name}", (8, 16), (235, 238, 245)
         )

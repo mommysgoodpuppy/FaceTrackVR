@@ -47,6 +47,9 @@ onnxruntime = [
     { version = "^1.20.0", platform = 'darwin' },
     { version = "^1.20.0", platform = 'linux' },
 ]
+# Native WebGPU uses Dawn -> Vulkan on Linux. Pin 0.1.0: newer plugin builds
+# currently require ONNX Runtime plugin API versions newer than stable 1.26.
+onnxruntime-ep-webgpu = { version = "0.1.0", platform = 'linux' }
 
 [tool.poetry.group.dev.dependencies]
 black = "^22.10.0"
@@ -77,4 +80,3 @@ python_files = [
 name = "ort-cuda-13"
 url = "https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/"
 priority = "explicit"
-

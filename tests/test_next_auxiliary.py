@@ -43,3 +43,19 @@ def test_next_auxiliary_is_rate_limited_and_preserves_feature_schema():
     assert first.pupil_dilation == second.pupil_dilation
     assert first.expressions == {}
     detector.run.assert_called_once()
+
+
+def test_next_auxiliary_debug_mode_submits_on_every_tracking_tick():
+    detector = RadiusDetector()
+    tracker = NextAuxiliaryTracker(detector=detector, rate_hz=1.0)
+    frame = pupil_frame(10)
+
+    tracker.update(frame, now=1.0)
+    normal = tracker.update(frame, now=1.02)
+    tracker.set_debug_rate(True)
+    debug = tracker.update(frame, now=1.04)
+
+    assert normal.sample_count == 1
+    assert debug.sample_count == 2
+    assert debug.debug_rate is True
+    assert 24.0 < debug.model_rate_hz < 26.0

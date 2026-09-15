@@ -40,6 +40,8 @@ class AuxiliaryEyeFeatures:
     ratio_range: tuple[float, float] | None = None
     sample_count: int = 0
     detector_name: str = "EllSeg"
+    model_rate_hz: float = 0.0
+    debug_rate: bool = False
     expressions: dict[str, float] = field(default_factory=dict)
 
     def diagnostics(self) -> dict:
@@ -58,6 +60,8 @@ class AuxiliaryEyeFeatures:
             "ratio_range": self.ratio_range,
             "sample_count": self.sample_count,
             "detector_name": self.detector_name,
+            "model_rate_hz": self.model_rate_hz,
+            "debug_rate": self.debug_rate,
         }
 
 
@@ -84,9 +88,18 @@ class NextAuxiliaryTracker:
         rate_hz: float = 1.0,
         history_size: int = 300,
         minimum_samples: int = 4,
+        use_gpu: bool = False,
+        debug_rate: bool = False,
     ):
-        self._detector = detector if detector is not None else EllSegPupilDetector()
-        self._interval = 1.0 / max(0.1, float(rate_hz))
+        self._detector = (
+            detector if detector is not None else EllSegPupilDetector(use_gpu=use_gpu, debug_rate=debug_rate)
+        )
+        self._normal_rate_hz = max(0.1, float(rate_hz))
+        self._debug_rate = bool(debug_rate)
+        # Debug mode submits on every tracking tick when the worker is free.
+        # With a 60 Hz camera this targets 60 Hz without building a stale-frame
+        # queue when the selected ONNX provider cannot keep up.
+        self._interval = 0.0 if self._debug_rate else 1.0 / self._normal_rate_hz
         self._last_run = float("-inf")
         self._size_signals = deque(maxlen=max(minimum_samples, history_size))
         self._minimum_samples = minimum_samples
@@ -104,6 +117,7 @@ class NextAuxiliaryTracker:
         self._pupil_to_iris_ratio: float | None = None
         self._frame_size: tuple[int, int] | None = None
         self._last_measurement = float("-inf")
+        self._measurement_times = deque(maxlen=30)
         self._detector_name = "EllSeg" if self._asynchronous_detector else "HSF"
         self._features = AuxiliaryEyeFeatures(pupil_dilation=0.5)
         self._warning_logged = False
@@ -111,6 +125,13 @@ class NextAuxiliaryTracker:
     @property
     def features(self) -> AuxiliaryEyeFeatures:
         return self._features
+
+    def set_debug_rate(self, enabled: bool):
+        """Switch between normal 1 Hz sampling and the 60 Hz debug target."""
+        self._debug_rate = bool(enabled)
+        self._interval = 0.0 if self._debug_rate else 1.0 / self._normal_rate_hz
+        if self._asynchronous_detector:
+            self._detector.set_debug_rate(self._debug_rate)
 
     def update(self, bgr_frame: np.ndarray, now: float | None = None) -> AuxiliaryEyeFeatures:
         now = time.monotonic() if now is None else float(now)
@@ -167,9 +188,10 @@ class NextAuxiliaryTracker:
                 ratio_range=self._ratio_range,
                 sample_count=len(self._size_signals),
                 detector_name=self._detector_name,
+                model_rate_hz=self._measured_rate_hz(),
+                debug_rate=self._debug_rate,
                 expressions=self._features.expressions,
             )
-            self._warning_logged = False
         except (
             cv2.error,
             TypeError,
@@ -225,6 +247,16 @@ class NextAuxiliaryTracker:
         ):
             self._geometry = geometry
             self._last_measurement = now
+            self._measurement_times.append(now)
+            self._warning_logged = False
+
+    def _measured_rate_hz(self) -> float:
+        if len(self._measurement_times) < 2:
+            return 0.0
+        elapsed = self._measurement_times[-1] - self._measurement_times[0]
+        if elapsed <= 0.0:
+            return 0.0
+        return float((len(self._measurement_times) - 1) / elapsed)
 
     @staticmethod
     def _measure_pupil_geometry(gray: np.ndarray, center_x, center_y) -> PupilGeometry | None:

@@ -14,6 +14,7 @@ class AdvancedTrackingAlgoSettingsValidationModel(BaseValidationModel):
     gui_skip_autoradius: bool
     gui_thresh_add: int
     gui_pupil_dilation: bool
+    gui_ellseg_debug_60hz: bool
 
 
 class AdvancedTrackingAlgoSettingsModule(BaseSettingsModule):
@@ -29,6 +30,7 @@ class AdvancedTrackingAlgoSettingsModule(BaseSettingsModule):
         self.gui_HSF_radius_left = f"-HSFRADIUSLEFT{widget_id}-"
         self.gui_HSF_radius_right = f"-HSFRADIUSRIGHT{widget_id}-"
         self.gui_pupil_dilation = f"-EBPD{widget_id}-"
+        self.gui_ellseg_debug_60hz = f"-ELLSEGDEBUG60{widget_id}-"
 
     def _add_slider_with_controls(self, parent, row, label, var, min_v, max_v):
         slider_length = 160
@@ -90,6 +92,11 @@ class AdvancedTrackingAlgoSettingsModule(BaseSettingsModule):
                 self.gui_pupil_dilation,
                 self.config.gui_pupil_dilation,
                 tr("algo_advanced.ellipse_pupil_dilation"),
+            ),
+            (
+                self.gui_ellseg_debug_60hz,
+                self.config.gui_ellseg_debug_60hz,
+                tr("algo_advanced.ellseg_debug_60hz"),
             ),
         ]
         ncol = 2

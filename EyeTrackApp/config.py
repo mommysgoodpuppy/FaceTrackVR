@@ -462,6 +462,9 @@ class EyeTrackSettingsConfig(BaseModel):
     # to v2 / legacy v1 / native-eye avatars from one tracking frame.
     gui_pyvrcft: bool = True
     gui_pupil_dilation: bool = False
+    # Diagnostic mode: request EllSeg inference at camera rate. The background
+    # worker drops stale frames when inference is slower, so NEXT never blocks.
+    gui_ellseg_debug_60hz: bool = False
 
     gui_VRCFTModulePort: int = 8889
     gui_VRCFTModuleIPAddress: str = "127.0.0.1"

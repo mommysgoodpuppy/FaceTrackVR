@@ -21,6 +21,7 @@ import numpy as np
 import onnxruntime
 
 from utils.misc_utils import resource_path
+from utils.onnx_runtime import DML_INFERENCE_LOCK, create_inference_session
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,10 @@ class EllSegMeasurement:
 class _EllSegRuntime:
     """One lazy ONNX session and worker shared by every eye tracker."""
 
-    def __init__(self):
+    def __init__(self, use_gpu: bool, high_rate: bool):
+        self._use_gpu = bool(use_gpu)
+        self._high_rate = bool(high_rate)
+        self._uses_directml = False
         self._jobs: queue.Queue = queue.Queue(maxsize=2)
         self._thread = threading.Thread(
             target=self._worker,
@@ -61,21 +65,33 @@ class _EllSegRuntime:
             return None
         return future
 
-    @staticmethod
-    def _create_session():
+    def _create_session(self):
         model_path = resource_path(_MODEL_PATH)
-        logger.info("EllSeg pupil: loading %s (CPU, low-rate worker)", model_path)
+        logger.info(
+            "EllSeg pupil: loading %s (GPU preferred: %s, high rate: %s)",
+            model_path,
+            self._use_gpu,
+            self._high_rate,
+        )
         onnxruntime.disable_telemetry_events()
+        if self._use_gpu and self._high_rate:
+            webgpu_session = _create_webgpu_session(model_path)
+            if webgpu_session is not None:
+                return webgpu_session
+
         options = onnxruntime.SessionOptions()
         options.inter_op_num_threads = 1
-        options.intra_op_num_threads = 1
+        options.intra_op_num_threads = 0 if self._high_rate else 1
         options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
         options.enable_mem_pattern = False
-        return onnxruntime.InferenceSession(
+        session, self._uses_directml = create_inference_session(
             model_path,
             options,
-            providers=["CPUExecutionProvider"],
+            use_gpu=self._use_gpu,
+            component="EllSeg pupil",
+            logger=logger,
         )
+        return session
 
     def _worker(self):
         session = None
@@ -89,28 +105,82 @@ class _EllSegRuntime:
                     session = self._create_session()
                     input_name = session.get_inputs()[0].name
                 tensor, transform = _preprocess(frame)
-                logits = session.run(None, {input_name: tensor})[0]
+                if self._uses_directml:
+                    with DML_INFERENCE_LOCK:
+                        logits = session.run(None, {input_name: tensor})[0]
+                else:
+                    logits = session.run(None, {input_name: tensor})[0]
                 future.set_result(_measurement_from_logits(logits, transform))
             except Exception as exc:
                 future.set_exception(exc)
 
 
-_RUNTIME: _EllSegRuntime | None = None
+_RUNTIMES: dict[tuple[bool, bool], _EllSegRuntime] = {}
 _RUNTIME_LOCK = threading.Lock()
 
 
-def _get_runtime() -> _EllSegRuntime:
-    global _RUNTIME
-    if _RUNTIME is None:
+def _get_runtime(use_gpu: bool, high_rate: bool) -> _EllSegRuntime:
+    key = (bool(use_gpu), bool(high_rate))
+    if key not in _RUNTIMES:
         with _RUNTIME_LOCK:
-            if _RUNTIME is None:
-                _RUNTIME = _EllSegRuntime()
-    return _RUNTIME
+            if key not in _RUNTIMES:
+                _RUNTIMES[key] = _EllSegRuntime(
+                    use_gpu=key[0],
+                    high_rate=key[1],
+                )
+    return _RUNTIMES[key]
 
 
 class EllSegPupilDetector:
+    def __init__(self, use_gpu: bool = False, debug_rate: bool = False):
+        self._use_gpu = bool(use_gpu)
+        self._debug_rate = bool(debug_rate)
+
+    def set_debug_rate(self, enabled: bool):
+        self._debug_rate = bool(enabled)
+
     def submit(self, frame: np.ndarray) -> Future | None:
-        return _get_runtime().submit(frame)
+        return _get_runtime(self._use_gpu, self._debug_rate).submit(frame)
+
+
+def _create_webgpu_session(model_path):
+    """Create the optional Linux WebGPU/Vulkan session, or return None."""
+    try:
+        import onnxruntime_ep_webgpu as webgpu_ep
+
+        if "WebGpuExecutionProvider" not in onnxruntime.get_available_providers():
+            onnxruntime.register_execution_provider_library(
+                "webgpu_ep_registration",
+                webgpu_ep.get_library_path(),
+            )
+        devices = [device for device in onnxruntime.get_ep_devices() if device.ep_name == webgpu_ep.get_ep_name()]
+        if not devices:
+            raise RuntimeError("no WebGPU/Vulkan device was discovered")
+
+        options = onnxruntime.SessionOptions()
+        options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
+        options.add_provider_for_devices(
+            devices,
+            {
+                # NHWC is faster in plugin 0.1.0 but changes EllSeg's output
+                # geometry. Preserve the exported model's NCHW numerics.
+                "preferredLayout": "NCHW",
+                # Plugin 0.1.0 currently returns an empty output list after
+                # the first captured run for this model. Regular dispatch is
+                # still fast enough for the debug-rate target.
+                "enableGraphCapture": "0",
+                "powerPreference": "high-performance",
+            },
+        )
+        session = onnxruntime.InferenceSession(model_path, sess_options=options)
+        logger.info("EllSeg pupil WebGPU providers: %s", session.get_providers())
+        return session
+    except (ImportError, AttributeError, RuntimeError, onnxruntime.OnnxRuntimeException) as exc:
+        logger.warning(
+            "EllSeg WebGPU unavailable (%s); using ONNX Runtime CPU fallback.",
+            exc,
+        )
+        return None
 
 
 @dataclass(frozen=True)

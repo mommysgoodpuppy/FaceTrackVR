@@ -865,8 +865,16 @@ class EyeProcessor:
             next_frame = next_frame[:, :mid] if self.eye_id == EyeId.LEFT else next_frame[:, mid:]
 
         if self.settings.gui_pupil_dilation:
+            ellseg_debug_rate = bool(
+                getattr(self.settings, "gui_ellseg_debug_60hz", False)
+            )
             if self.next_auxiliary_tracker is None:
-                self.next_auxiliary_tracker = NextAuxiliaryTracker()
+                self.next_auxiliary_tracker = NextAuxiliaryTracker(
+                    use_gpu=bool(self.settings.gui_use_gpu),
+                    debug_rate=ellseg_debug_rate,
+                )
+            else:
+                self.next_auxiliary_tracker.set_debug_rate(ellseg_debug_rate)
             self.next_auxiliary_features = self.next_auxiliary_tracker.update(next_frame)
 
         variant = getattr(self.settings, "gui_model_variant", "ETVR")
