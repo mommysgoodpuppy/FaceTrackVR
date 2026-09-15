@@ -456,7 +456,7 @@ class CameraWidget:
         if raw_dilation is not None:
             if comparison_dilation is not None:
                 mapping_text = (
-                    f"ELL RAW {float(raw_dilation):.2f}>DIL {measured_dilation:.2f}"
+                    f"ELL BASE {float(raw_dilation):.2f}>DIL {measured_dilation:.2f}"
                     f"  EBPD {float(comparison_dilation):.2f}"
                 )
             elif "comparison_geometry_quality" in diagnostics:
@@ -464,7 +464,7 @@ class CameraWidget:
                     diagnostics.get("comparison_detector_name", "EBPD NO SIZE")
                 ).replace("EBPD ", "")
                 mapping_text = (
-                    f"ELL RAW {float(raw_dilation):.2f}>DIL {measured_dilation:.2f}"
+                    f"ELL BASE {float(raw_dilation):.2f}>DIL {measured_dilation:.2f}"
                     f"  {comparison_name}"
                 )
             elif detector_name.startswith("EBPD"):
@@ -474,7 +474,7 @@ class CameraWidget:
                 output_range = diagnostics.get("dilation_output_range", (0.0, 1.0))
                 gamma = float(diagnostics.get("preprocess_gamma", 1.0))
                 mapping_text = (
-                    f"RAW {float(raw_dilation):.2f}>DIL {measured_dilation:.2f}"
+                    f"BASE {float(raw_dilation):.2f}>DIL {measured_dilation:.2f}"
                     f" MAP {float(output_range[0]) * 100:.0f}-{float(output_range[1]) * 100:.0f}%"
                     f" G{gamma:.2f}"
                 )
@@ -588,8 +588,13 @@ class CameraWidget:
             if pupil_ratio is not None:
                 radius_text += f"   P/I {float(pupil_ratio):.3f}"
             if ratio_range:
+                range_label = (
+                    "BASE"
+                    if diagnostics.get("calibration_mode") == "fixed"
+                    else "CAL"
+                )
                 radius_text += (
-                    f"   CAL {float(ratio_range[0]):.3f}-{float(ratio_range[1]):.3f}"
+                    f"   {range_label} {float(ratio_range[0]):.3f}-{float(ratio_range[1]):.3f}"
                 )
             elif radius_range:
                 radius_text += (

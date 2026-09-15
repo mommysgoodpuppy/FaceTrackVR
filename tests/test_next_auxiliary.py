@@ -2,7 +2,11 @@ from unittest import mock
 
 import numpy as np
 
-from next_auxiliary import NextAuxiliaryTracker
+from next_auxiliary import (
+    ELLSEG_RATIO_CONSTRICTED,
+    ELLSEG_RATIO_DILATED,
+    NextAuxiliaryTracker,
+)
 
 
 class RadiusDetector:
@@ -69,3 +73,31 @@ def test_manual_dilation_range_maps_eighty_percent_to_full_output():
     assert tracker._map_dilation_output(0.4) == 0.5
     assert tracker._map_dilation_output(0.8) == 1.0
     assert tracker._map_dilation_output(1.0) == 1.0
+
+
+def test_ellseg_uses_fixed_ratio_baseline_instead_of_rolling_history():
+    tracker = NextAuxiliaryTracker(detector=RadiusDetector(), minimum_samples=4)
+    midpoint = (ELLSEG_RATIO_CONSTRICTED + ELLSEG_RATIO_DILATED) / 2.0
+
+    for _ in range(100):
+        assert tracker._set_normalization_target(
+            ELLSEG_RATIO_DILATED,
+            50,
+            50,
+            (100, 100),
+            ratio_based=True,
+        )
+        assert tracker._target == 1.0
+
+    tracker._set_normalization_target(
+        midpoint,
+        50,
+        50,
+        (100, 100),
+        ratio_based=True,
+    )
+    assert abs(tracker._target - 0.5) < 1e-9
+    assert tracker._ratio_range == (
+        ELLSEG_RATIO_CONSTRICTED,
+        ELLSEG_RATIO_DILATED,
+    )

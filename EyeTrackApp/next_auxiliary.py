@@ -22,6 +22,14 @@ from ellseg_pupil import EllSegMeasurement, EllSegPupilDetector
 
 logger = logging.getLogger(__name__)
 
+# Fixed EllSeg/BSB model-space baseline. Real anatomical pupil/iris ratios can
+# reach higher values, but the oblique BSB images and EllSeg's reconstructed
+# masks consistently report about 0.52-0.55 for the supplied dilated samples.
+# Keeping this fixed prevents prolonged dilation from being relearned as
+# neutral. The user-facing output range remains an independent final remap.
+ELLSEG_RATIO_CONSTRICTED = 0.25
+ELLSEG_RATIO_DILATED = 0.55
+
 
 @dataclass(frozen=True)
 class AuxiliaryEyeFeatures:
@@ -45,6 +53,7 @@ class AuxiliaryEyeFeatures:
     debug_rate: bool = False
     dilation_output_range: tuple[float, float] = (0.0, 1.0)
     preprocess_gamma: float = 0.8
+    calibration_mode: str = ""
     expressions: dict[str, float] = field(default_factory=dict)
 
     def diagnostics(self) -> dict:
@@ -69,6 +78,7 @@ class AuxiliaryEyeFeatures:
             "debug_rate": self.debug_rate,
             "dilation_output_range": self.dilation_output_range,
             "preprocess_gamma": self.preprocess_gamma,
+            "calibration_mode": self.calibration_mode,
         }
 
 
@@ -85,8 +95,9 @@ class NextAuxiliaryTracker:
 
     EllSeg runs asynchronously at low rate and predicts complete pupil and iris
     ellipses even when an eyelid hides part of their edge. The pupil-to-iris
-    size ratio is normalized over a rolling window, cancelling most of the
-    foreshortening caused by an oblique headset camera. NEXT gaze is untouched.
+    size ratio is normalized against a fixed model-space baseline, cancelling
+    most camera foreshortening without learning prolonged dilation as neutral.
+    NEXT gaze is untouched.
     """
 
     def __init__(
@@ -225,6 +236,7 @@ class NextAuxiliaryTracker:
                 debug_rate=self._debug_rate,
                 dilation_output_range=(self._dilation_min, self._dilation_max),
                 preprocess_gamma=self._preprocess_gamma,
+                calibration_mode=("fixed" if self._ratio_range else "rolling"),
                 expressions=self._features.expressions,
             )
         except (
@@ -393,18 +405,24 @@ class NextAuxiliaryTracker:
             return False
 
         self._size_signals.append(size_signal)
-        if len(self._size_signals) < self._minimum_samples:
+        if ratio_based:
+            # Do not infer min/max from recent history: a pupil that remains
+            # dilated for minutes must stay dilated rather than slowly becoming
+            # the new midpoint. Iris-relative scale makes one fixed baseline
+            # substantially more portable than fixed pixel diameters.
+            low = ELLSEG_RATIO_CONSTRICTED
+            high = ELLSEG_RATIO_DILATED
+            self._ratio_range = (low, high)
+            target = float(np.clip((size_signal - low) / (high - low), 0.0, 1.0))
+        elif len(self._size_signals) < self._minimum_samples:
             target = 0.5
         else:
             low, high = np.percentile(np.asarray(self._size_signals), [5.0, 95.0])
-            if ratio_based:
-                self._ratio_range = (float(low), float(high))
-            else:
-                self._radius_range = (float(low), float(high))
+            self._radius_range = (float(low), float(high))
             span = float(high - low)
             # Until the observed pupil actually changes, neutral is more
             # honest than amplifying detector noise into full-range dilation.
-            noise_floor = max(0.003 if ratio_based else 0.25, float(low) * 0.03)
+            noise_floor = max(0.25, float(low) * 0.03)
             if span < noise_floor:
                 target = 0.5
             else:
