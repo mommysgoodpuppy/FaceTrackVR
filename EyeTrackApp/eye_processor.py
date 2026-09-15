@@ -310,6 +310,8 @@ class EyeProcessor:
         self.current_algorithm = EyeInfoOrigin.HSRAC
         self.pupil_width = 0.0
         self.pupil_height = 0.0
+        self._pupil_geometry_source: str | None = None
+        self._pupil_geometry_label = ""
         self.avg_velocity = 0.0
         self.angle = 621
         self.ahsf_runner = None
@@ -608,31 +610,21 @@ class EyeProcessor:
     def _prepare_pupil_axes_for_dilation(self) -> str | None:
         """Return the classical pupil geometry kind used by legacy EBPD.
 
-        RANSAC-derived trackers provide fitted ellipse axes. HSF/AHSF and
-        DADDY only provide a radius, which is useful for comparison but is a
-        weaker proxy. LEAP has no pupil-size output and must not inherit stale
-        axes from a previously selected tracker.
+        RANSAC-derived trackers provide fitted ellipse axes and AHSF provides a
+        detected rectangle. HSF's radius is only a search-kernel setting,
+        DADDY's third return is eyelid aspect ratio, and LEAP has no pupil-size
+        output; none of those values may inherit or masquerade as pupil axes.
         """
-        if self.current_algo in (EyeInfoOrigin.RANSAC, EyeInfoOrigin.HSRAC):
+        source = getattr(self, "_pupil_geometry_source", None)
+        if source == "ellipse":
             if self.pupil_width > 1e-3 and self.pupil_height > 1e-3:
                 return "ellipse"
             return None
-        if self.current_algo not in (EyeInfoOrigin.HSF, EyeInfoOrigin.DADDY):
-            self.pupil_width = 0.0
-            self.pupil_height = 0.0
-            return None
-        try:
-            r = float(abs(self.radius))
-        except (TypeError, ValueError):
-            r = 0.0
-        if r < 1.0:
-            self.pupil_width = 0.0
-            self.pupil_height = 0.0
-            return None
-        d = 2.0 * r
-        self.pupil_width = d
-        self.pupil_height = d
-        return "radius proxy"
+        if source == "rectangle" and self.pupil_width > 1e-3 and self.pupil_height > 1e-3:
+            return "rectangle proxy"
+        self.pupil_width = 0.0
+        self.pupil_height = 0.0
+        return None
 
     def _ellseg_input_frame(self) -> np.ndarray | None:
         if self.current_raw_frame is None:
@@ -673,7 +665,8 @@ class EyeProcessor:
         self.next_auxiliary_features = self.next_auxiliary_tracker.update(frame)
 
     def _classical_pupil_diagnostics(self, geometry_kind: str | None) -> dict:
-        detector = f"EBPD {self.current_algo.name}"
+        label = getattr(self, "_pupil_geometry_label", "") or self.current_algo.name
+        detector = f"EBPD {label}"
         diagnostics = {
             "pupil_locked": geometry_kind is not None,
             "detector_name": detector,
@@ -917,6 +910,8 @@ class EyeProcessor:
         self.eyeopen = BLINK(self)
 
     def LEAPM(self):
+        self._pupil_geometry_source = None
+        self._pupil_geometry_label = "LEAP NO SIZE"
         self.thresh = self.current_image_gray.copy()
         (
             self.current_image_gray,
@@ -941,6 +936,8 @@ class EyeProcessor:
         self.current_algorithm = EyeInfoOrigin.LEAP
 
     def DADDYM(self):
+        self._pupil_geometry_source = None
+        self._pupil_geometry_label = "DADDY NO SIZE"
         self.thresh = self.current_image_gray.copy()
         self.rawx, self.rawy, self.radius = self.daddy_runner.run(
             self.current_image_gray
@@ -965,6 +962,8 @@ class EyeProcessor:
         shared by both paths via _next_apply()."""
         if self.current_raw_frame is None:
             return
+        self._pupil_geometry_source = None
+        self._pupil_geometry_label = "ELLSEG"
         self.thresh = self.current_image_gray.copy()
 
         base_cutoff = float(self.settings.gui_min_cutoff)
@@ -1181,6 +1180,8 @@ class EyeProcessor:
             self.pupil_width,
             self.pupil_height,
         ) = RANSAC3D(self, True)
+        self._pupil_geometry_source = "ellipse"
+        self._pupil_geometry_label = "AHRAC RANSAC"
         if self.settings.gui_RANSACBLINK:  # might be redundant
             self.eyeopen = ranblink
 
@@ -1205,6 +1206,8 @@ class EyeProcessor:
             self.pupil_width,
             self.pupil_height,
         ) = RANSAC3D(self, True)
+        self._pupil_geometry_source = "ellipse"
+        self._pupil_geometry_label = "HSRAC RANSAC"
         if self.settings.gui_RANSACBLINK:  # might be redundant
             self.eyeopen = ranblink
 
@@ -1219,6 +1222,10 @@ class EyeProcessor:
         self.rawx, self.rawy, self.thresh, self.radius = self.hsf_runner.run(
             self.current_image_gray
         )
+        # HSF's returned radius is its search-kernel radius, not a pupil-size
+        # measurement. It is valid for locating gaze but not for dilation.
+        self._pupil_geometry_source = None
+        self._pupil_geometry_label = "HSF NO SIZE"
         self.out_x, self.out_y, self.avg_velocity = cal.cal_osc(
             self, self.rawx, self.rawy, self.angle
         )
@@ -1236,6 +1243,8 @@ class EyeProcessor:
             self.pupil_width,
             self.pupil_height,
         ) = RANSAC3D(self, True)
+        self._pupil_geometry_source = "ellipse"
+        self._pupil_geometry_label = "RANSAC"
         if self.settings.gui_RANSACBLINK:
             self.eyeopen = ranblink
         self.out_x, self.out_y, self.avg_velocity = cal.cal_osc(
@@ -1252,6 +1261,11 @@ class EyeProcessor:
             self.rawy,
             self.radius,
         ) = self.ahsf_runner.detect_etvr(self.current_image_gray)
+        _px, _py, pupil_w, pupil_h = self.ahsf_runner.pupil_rect_fine
+        self.pupil_width = float(pupil_w)
+        self.pupil_height = float(pupil_h)
+        self._pupil_geometry_source = "rectangle"
+        self._pupil_geometry_label = "AHSF RECT"
         self.thresh = self.current_image_gray
         self.out_x, self.out_y, self.avg_velocity = cal.cal_osc(
             self, self.rawx, self.rawy, self.angle

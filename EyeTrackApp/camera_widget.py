@@ -459,6 +459,14 @@ class CameraWidget:
                     f"ELL RAW {float(raw_dilation):.2f}>DIL {measured_dilation:.2f}"
                     f"  EBPD {float(comparison_dilation):.2f}"
                 )
+            elif "comparison_geometry_quality" in diagnostics:
+                comparison_name = str(
+                    diagnostics.get("comparison_detector_name", "EBPD NO SIZE")
+                ).replace("EBPD ", "")
+                mapping_text = (
+                    f"ELL RAW {float(raw_dilation):.2f}>DIL {measured_dilation:.2f}"
+                    f"  {comparison_name}"
+                )
             elif detector_name.startswith("EBPD"):
                 quality = str(diagnostics.get("geometry_quality", "")).upper()
                 mapping_text = f"EBPD DIL {dilation:.2f}  {quality}"
