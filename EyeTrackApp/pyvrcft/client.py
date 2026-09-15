@@ -99,6 +99,7 @@ class VRCFTClient:
         self._lock = threading.Lock()
 
         self._oscquery_endpoint = None  # (host, port) of VRChat's HTTP server
+        self._avatar_resolution_warning_logged = False
         self._running = False
         self._threads: list[threading.Thread] = []
         self._send_sock: socket.socket | None = None
@@ -220,22 +221,35 @@ class VRCFTClient:
 
     # ---------------------------------------------------------- avatar config
 
-    def _resolve_avatar(self, avatar_id: str = "") -> None:
-        """Fetch the current avatar's parameter list and rebuild all slots."""
+    def _resolve_avatar(self, avatar_id: str = "") -> bool:
+        """Fetch the current avatar's parameter list and rebuild changed slots.
+
+        Returns whether a usable avatar was resolved. OSCQuery can be reachable
+        before VRChat has populated ``/avatar``; callers may safely retry.
+        """
         info = None
         if self._oscquery_endpoint is not None:
             info = fetch_avatar_oscquery(*self._oscquery_endpoint)
         if (info is None or not info.parameters) and avatar_id:
             info = load_avatar_config(avatar_id)
-        if info is None:
-            logger.warning(
-                "Could not resolve avatar config for %r (no OSCQuery endpoint "
-                "and no disk config). Parameters stay unresolved.",
-                avatar_id or "<unknown>",
-            )
-            return
+        if info is None or not info.parameters:
+            if not self._avatar_resolution_warning_logged:
+                logger.warning(
+                    "Could not resolve avatar config for %r (OSCQuery has no "
+                    "usable avatar yet and no disk config was found). Will retry.",
+                    avatar_id or "<unknown>",
+                )
+                self._avatar_resolution_warning_logged = True
+            return False
         if avatar_id and not info.id:
             info.id = avatar_id
+
+        # When port 9001 belongs to another OSC app, OSCQuery is polled to
+        # detect avatar changes. Avoid rebuilding slots (and resending every
+        # value) when the polled avatar data has not changed.
+        if self.avatar == info:
+            self._avatar_resolution_warning_logged = False
+            return True
 
         with self._lock:
             self.avatar = info
@@ -262,6 +276,8 @@ class VRCFTClient:
                 self.on_avatar_change(info)
             except Exception:
                 logger.exception("on_avatar_change callback failed")
+        self._avatar_resolution_warning_logged = False
+        return True
 
     def _resolve_one(self, name: str) -> None:
         """Build output slots for one logical param (caller holds the lock)."""
@@ -358,18 +374,35 @@ class VRCFTClient:
                 logger.exception("on_message callback failed")
 
     def _discover_loop(self) -> None:
-        """Find VRChat's OSCQuery server so we can resolve the avatar even if
-        we started after it loaded (no /avatar/change to catch)."""
-        while self._running and self._oscquery_endpoint is None:
-            endpoint = mdns.discover_vrchat_oscquery(timeout=3.0)
-            if endpoint is not None:
+        """Discover VRChat and keep avatar state current through OSCQuery.
+
+        Normally ``/avatar/change`` on port 9001 handles changes. If another
+        OSC program owns that port, polling is the only reliable path. It also
+        closes the startup race where OSCQuery is online before an avatar has
+        been populated.
+        """
+        while self._running:
+            if self._oscquery_endpoint is None:
+                endpoint = mdns.discover_vrchat_oscquery(timeout=3.0)
+                if endpoint is None:
+                    self._wait_while_running(10.0)
+                    continue
                 self._oscquery_endpoint = endpoint
                 logger.info("Found VRChat OSCQuery at http://%s:%d", *endpoint)
-                if self.avatar is None:
-                    self._resolve_avatar()
+
+            resolved = self._resolve_avatar()
+
+            # A bound receiver will provide subsequent avatar-change events.
+            # Without it, continue polling so coexisting OSC apps are safe.
+            if resolved and self._recv_sock is not None:
                 return
-            # VRChat may not be running yet; retry quietly.
-            for _ in range(10):
-                if not self._running:
-                    return
-                time.sleep(1.0)
+            self._wait_while_running(2.0)
+
+    def _wait_while_running(self, seconds: float) -> None:
+        """Wait in short steps so shutdown never blocks on a poll interval."""
+        deadline = time.monotonic() + seconds
+        while self._running:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            time.sleep(min(0.25, remaining))
