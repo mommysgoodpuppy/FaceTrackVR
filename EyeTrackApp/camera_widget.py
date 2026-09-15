@@ -438,6 +438,10 @@ class CameraWidget:
 
         dilation = float(np.clip(eye_info.pupil_dilation, 0.0, 1.0))
         raw_dilation = diagnostics.get("pupil_dilation_raw")
+        measured_dilation = float(
+            np.clip(diagnostics.get("pupil_dilation_mapped", dilation), 0.0, 1.0)
+        )
+        comparison_dilation = diagnostics.get("comparison_pupil_dilation_mapped")
         lid = float(np.clip(eye_info.blink, 0.0, 1.0))
         brow = float(getattr(eye_info, "eyebrow", float("nan")))
         squeeze = float(getattr(eye_info, "squeeze", 0.0))
@@ -450,13 +454,22 @@ class CameraWidget:
 
         detail_y = 55
         if raw_dilation is not None:
-            output_range = diagnostics.get("dilation_output_range", (0.0, 1.0))
-            gamma = float(diagnostics.get("preprocess_gamma", 1.0))
-            mapping_text = (
-                f"RAW {float(raw_dilation):.2f}>DIL {dilation:.2f}"
-                f" MAP {float(output_range[0]) * 100:.0f}-{float(output_range[1]) * 100:.0f}%"
-                f" G{gamma:.2f}"
-            )
+            if comparison_dilation is not None:
+                mapping_text = (
+                    f"ELL RAW {float(raw_dilation):.2f}>DIL {measured_dilation:.2f}"
+                    f"  EBPD {float(comparison_dilation):.2f}"
+                )
+            elif detector_name.startswith("EBPD"):
+                quality = str(diagnostics.get("geometry_quality", "")).upper()
+                mapping_text = f"EBPD DIL {dilation:.2f}  {quality}"
+            else:
+                output_range = diagnostics.get("dilation_output_range", (0.0, 1.0))
+                gamma = float(diagnostics.get("preprocess_gamma", 1.0))
+                mapping_text = (
+                    f"RAW {float(raw_dilation):.2f}>DIL {measured_dilation:.2f}"
+                    f" MAP {float(output_range[0]) * 100:.0f}-{float(output_range[1]) * 100:.0f}%"
+                    f" G{gamma:.2f}"
+                )
             self._outlined_text(annotated, mapping_text, (8, detail_y), accent)
             detail_y += 17
 
@@ -515,6 +528,39 @@ class CameraWidget:
                 (255, 255, 255),
                 cv2.MARKER_CROSS,
                 12,
+                1,
+                cv2.LINE_AA,
+            )
+
+        comparison_center = diagnostics.get("comparison_pupil_center")
+        comparison_axes = diagnostics.get("comparison_pupil_axes")
+        comparison_frame_size = diagnostics.get("comparison_frame_size")
+        if (
+            diagnostics.get("comparison_pupil_locked", False)
+            and comparison_center
+            and comparison_axes
+            and comparison_frame_size
+        ):
+            source_w, source_h = comparison_frame_size
+            scale_x = width / max(1.0, float(source_w))
+            scale_y = height / max(1.0, float(source_h))
+            legacy_center = (
+                int(round(float(comparison_center[0]) * scale_x)),
+                int(round(float(comparison_center[1]) * scale_y)),
+            )
+            legacy_axes = (
+                max(2, int(round(float(comparison_axes[0]) * scale_x / 2.0))),
+                max(2, int(round(float(comparison_axes[1]) * scale_y / 2.0))),
+            )
+            # Magenta is the classical EBPD source; green/orange remains EllSeg.
+            cv2.ellipse(
+                annotated,
+                legacy_center,
+                legacy_axes,
+                float(diagnostics.get("comparison_pupil_angle_degrees", 0.0)),
+                0,
+                360,
+                (220, 100, 255),
                 1,
                 cv2.LINE_AA,
             )

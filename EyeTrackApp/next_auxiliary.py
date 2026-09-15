@@ -51,6 +51,7 @@ class AuxiliaryEyeFeatures:
         return {
             "pupil_locked": self.pupil_locked,
             "pupil_dilation_raw": self.pupil_dilation_raw,
+            "pupil_dilation_mapped": self.pupil_dilation,
             "pupil_center": self.pupil_center,
             "pupil_axes": self.pupil_axes,
             "pupil_angle_degrees": self.pupil_angle_degrees,

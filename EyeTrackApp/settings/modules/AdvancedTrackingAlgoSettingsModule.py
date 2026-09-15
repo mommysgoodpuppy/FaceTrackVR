@@ -17,6 +17,7 @@ class AdvancedTrackingAlgoSettingsValidationModel(BaseValidationModel):
     gui_thresh_add: int
     gui_pupil_dilation: bool
     gui_ellseg_debug_60hz: bool
+    gui_ellseg_compare_legacy: bool
     gui_ellseg_dilation_min_percent: int
     gui_ellseg_dilation_max_percent: int
     gui_ellseg_gamma_percent: int
@@ -42,6 +43,7 @@ class AdvancedTrackingAlgoSettingsModule(BaseSettingsModule):
         self.gui_HSF_radius_right = f"-HSFRADIUSRIGHT{widget_id}-"
         self.gui_pupil_dilation = f"-EBPD{widget_id}-"
         self.gui_ellseg_debug_60hz = f"-ELLSEGDEBUG60{widget_id}-"
+        self.gui_ellseg_compare_legacy = f"-ELLSEGCOMPARE{widget_id}-"
         self.gui_ellseg_dilation_min_percent = f"-ELLSEGMIN{widget_id}-"
         self.gui_ellseg_dilation_max_percent = f"-ELLSEGMAX{widget_id}-"
         self.gui_ellseg_gamma_percent = f"-ELLSEGGAMMA{widget_id}-"
@@ -111,6 +113,11 @@ class AdvancedTrackingAlgoSettingsModule(BaseSettingsModule):
                 self.gui_ellseg_debug_60hz,
                 self.config.gui_ellseg_debug_60hz,
                 tr("algo_advanced.ellseg_debug_60hz"),
+            ),
+            (
+                self.gui_ellseg_compare_legacy,
+                self.config.gui_ellseg_compare_legacy,
+                tr("algo_advanced.ellseg_compare_legacy"),
             ),
         ]
         ncol = 2

@@ -465,6 +465,9 @@ class EyeTrackSettingsConfig(BaseModel):
     # Diagnostic mode: request EllSeg inference at camera rate. The background
     # worker drops stale frames when inference is slower, so NEXT never blocks.
     gui_ellseg_debug_60hz: bool = False
+    # When a classical tracker is selected, keep EllSeg running as a reference
+    # and draw both pupil estimates without replacing the classical OSC output.
+    gui_ellseg_compare_legacy: bool = False
     # Post-auto-calibration input range mapped onto VRChat's 0..1 dilation.
     # For example, max=80 makes a measured 0.80 send as 1.00.
     gui_ellseg_dilation_min_percent: int = 0

@@ -36,6 +36,14 @@ def test_tracking_preview_annotates_pupil_and_diagnostics():
             "ratio_range": (0.42, 0.56),
             "sample_count": 12,
             "detector_name": "EllSeg",
+            "pupil_dilation_raw": 0.6,
+            "pupil_dilation_mapped": 0.7,
+            "comparison_pupil_locked": True,
+            "comparison_pupil_center": (120.0, 120.0),
+            "comparison_pupil_axes": (30.0, 22.0),
+            "comparison_pupil_angle_degrees": 5.0,
+            "comparison_frame_size": (300, 300),
+            "comparison_pupil_dilation_mapped": 0.55,
         },
     )
 
@@ -43,6 +51,11 @@ def test_tracking_preview_annotates_pupil_and_diagnostics():
 
     assert annotated.shape == (300, 300, 3)
     assert np.any(annotated[:, :, 0] != annotated[:, :, 1])
+    assert np.any(
+        (annotated[:, :, 0] > 180)
+        & (annotated[:, :, 1] < 160)
+        & (annotated[:, :, 2] > 220)
+    )
     # The segmentation visualization is outline-only; the iris interior stays
     # as the unobscured grayscale camera image.
     assert tuple(annotated[135, 175]) == (90, 90, 90)

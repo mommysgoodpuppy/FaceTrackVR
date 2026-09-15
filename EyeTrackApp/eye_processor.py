@@ -29,6 +29,7 @@ LICENSE: Babble Software Distribution License 1.0
 """
 
 import logging
+import math
 import sys
 import os
 import time
@@ -414,6 +415,9 @@ class EyeProcessor:
         self._preview_last_emit_ts = now
 
         preview_image = self.current_image_gray
+        preview_diagnostics = getattr(
+            output_information, "auxiliary_diagnostics", {}
+        ) or {}
         if self._next_active and self.current_raw_frame is not None:
             # NEXT inference deliberately bypasses the legacy ROI and rotation.
             # Make its visualizer show that same input instead of the cropped
@@ -433,6 +437,15 @@ class EyeProcessor:
             # copy of the cropped working image, so keep both panels consistent
             # with the raw model input while NEXT is active.
             threshold_image = preview_image
+        elif preview_diagnostics.get(
+            "geometry_quality"
+        ) == "ellipse" or preview_diagnostics.get(
+            "comparison_geometry_quality"
+        ) == "ellipse":
+            # RANSAC replaces current_image_gray with its small search crop,
+            # while its returned center is expressed in the full clean frame.
+            # Show that full frame so the ellipse overlay uses the same space.
+            preview_image = self.current_image_gray_clean
 
         preview_image = cv2.resize(
             preview_image, (150, 150), interpolation=cv2.INTER_AREA
@@ -592,19 +605,105 @@ class EyeProcessor:
         except (cv2.error, ValueError, IndexError, AttributeError) as e:
             logger.debug("RGBA border blend failed: %s", e)
 
-    def _ensure_pupil_axes_for_dilation(self) -> None:
-        """EBPD expects ellipse axes in pixels; RANSAC3D sets pupil_width/height, other trackers only set radius."""
-        if self.pupil_width > 1e-3 and self.pupil_height > 1e-3:
-            return
+    def _prepare_pupil_axes_for_dilation(self) -> str | None:
+        """Return the classical pupil geometry kind used by legacy EBPD.
+
+        RANSAC-derived trackers provide fitted ellipse axes. HSF/AHSF and
+        DADDY only provide a radius, which is useful for comparison but is a
+        weaker proxy. LEAP has no pupil-size output and must not inherit stale
+        axes from a previously selected tracker.
+        """
+        if self.current_algo in (EyeInfoOrigin.RANSAC, EyeInfoOrigin.HSRAC):
+            if self.pupil_width > 1e-3 and self.pupil_height > 1e-3:
+                return "ellipse"
+            return None
+        if self.current_algo not in (EyeInfoOrigin.HSF, EyeInfoOrigin.DADDY):
+            self.pupil_width = 0.0
+            self.pupil_height = 0.0
+            return None
         try:
             r = float(abs(self.radius))
         except (TypeError, ValueError):
             r = 0.0
         if r < 1.0:
-            r = 10.0
+            self.pupil_width = 0.0
+            self.pupil_height = 0.0
+            return None
         d = 2.0 * r
         self.pupil_width = d
         self.pupil_height = d
+        return "radius proxy"
+
+    def _ellseg_input_frame(self) -> np.ndarray | None:
+        if self.current_raw_frame is None:
+            return None
+        frame = self.current_raw_frame
+        if self.settings.gui_setup_mode == "bigscreen":
+            mid = frame.shape[1] // 2
+            frame = frame[:, :mid] if self.eye_id == EyeId.LEFT else frame[:, mid:]
+        return frame
+
+    def _classical_pupil_frame(self) -> np.ndarray:
+        if self.current_algo in (EyeInfoOrigin.RANSAC, EyeInfoOrigin.HSRAC):
+            return self.current_image_gray_clean
+        return self.current_image_gray
+
+    def _update_ellseg_auxiliary(self, frame: np.ndarray | None = None) -> None:
+        if frame is None:
+            frame = self._ellseg_input_frame()
+        if frame is None:
+            return
+        ellseg_debug_rate = bool(
+            getattr(self.settings, "gui_ellseg_debug_60hz", False)
+        )
+        if self.next_auxiliary_tracker is None:
+            self.next_auxiliary_tracker = NextAuxiliaryTracker(
+                use_gpu=bool(self.settings.gui_use_gpu),
+                debug_rate=ellseg_debug_rate,
+            )
+        else:
+            self.next_auxiliary_tracker.set_debug_rate(ellseg_debug_rate)
+        self.next_auxiliary_tracker.set_dilation_output_range(
+            getattr(self.settings, "gui_ellseg_dilation_min_percent", 0) / 100.0,
+            getattr(self.settings, "gui_ellseg_dilation_max_percent", 100) / 100.0,
+        )
+        self.next_auxiliary_tracker.set_preprocess_gamma(
+            getattr(self.settings, "gui_ellseg_gamma_percent", 80) / 100.0
+        )
+        self.next_auxiliary_features = self.next_auxiliary_tracker.update(frame)
+
+    def _classical_pupil_diagnostics(self, geometry_kind: str | None) -> dict:
+        detector = f"EBPD {self.current_algo.name}"
+        diagnostics = {
+            "pupil_locked": geometry_kind is not None,
+            "detector_name": detector,
+            "geometry_quality": geometry_kind or "unavailable",
+        }
+        if geometry_kind is None:
+            return diagnostics
+        frame = self._classical_pupil_frame()
+        height, width = frame.shape[:2]
+        diagnostics.update(
+            {
+                "pupil_dilation_raw": self.pupil_dilation,
+                "pupil_dilation_mapped": self.pupil_dilation,
+                "pupil_center": (float(self.rawx), float(self.rawy)),
+                "pupil_axes": (float(self.pupil_width), float(self.pupil_height)),
+                "pupil_angle_degrees": (
+                    float(self.angle) if geometry_kind == "ellipse" else 0.0
+                ),
+                "pupil_radius_px": math.sqrt(
+                    max(0.0, float(self.pupil_width * self.pupil_height))
+                )
+                / 2.0,
+                "pupil_area_px2": math.pi
+                * float(self.pupil_width)
+                * float(self.pupil_height)
+                / 4.0,
+                "frame_size": (width, height),
+            }
+        )
+        return diagnostics
 
     def _enqueue_osc_message(self, osc_message: OSCMessage) -> None:
         try:
@@ -728,25 +827,41 @@ class EyeProcessor:
             # self.out_x = sum(self.prev_x_list) / len(self.prev_x_list)
             self.out_y = sum(self.prev_y_list) / len(self.prev_y_list)
 
+        auxiliary_diagnostics = {}
+        auxiliary_expressions = {}
         if self.settings.gui_pupil_dilation and self._next_active:
-            # NEXT has no pupil-size output. Its auxiliary HSF sidecar measures
-            # radius without replacing NEXT gaze or expressions.
+            # NEXT has no pupil-size output. EllSeg supplies it without
+            # replacing NEXT gaze or expressions.
             self.pupil_dilation = float(
                 self.next_auxiliary_features.pupil_dilation
                 if self.next_auxiliary_features.pupil_dilation is not None
                 else 0.5
             )
+            auxiliary_diagnostics = self.next_auxiliary_features.diagnostics()
+            auxiliary_expressions = dict(self.next_auxiliary_features.expressions)
         elif self.settings.gui_pupil_dilation:
-            self._ensure_pupil_axes_for_dilation()
-            self.pupil_dilation = self.ebpd.intense(
-                self.pupil_width,
-                self.pupil_height,
-                self.rawx,
-                self.rawy,
-                self.current_image_white,
-                self._ibo_filter_samples(),
-                self.settings.ibo_average_output_samples,
-            )
+            geometry_kind = self._prepare_pupil_axes_for_dilation()
+            if geometry_kind is None:
+                self.pupil_dilation = 0.5
+            else:
+                self.pupil_dilation = self.ebpd.intense(
+                    self.pupil_width,
+                    self.pupil_height,
+                    self.rawx,
+                    self.rawy,
+                    self.current_image_white,
+                    self._ibo_filter_samples(),
+                    self.settings.ibo_average_output_samples,
+                )
+            classical = self._classical_pupil_diagnostics(geometry_kind)
+            if getattr(self.settings, "gui_ellseg_compare_legacy", False):
+                self._update_ellseg_auxiliary(self._classical_pupil_frame())
+                auxiliary_diagnostics = self.next_auxiliary_features.diagnostics()
+                auxiliary_diagnostics.update(
+                    {f"comparison_{key}": value for key, value in classical.items()}
+                )
+            else:
+                auxiliary_diagnostics = classical
         else:
             self.pupil_dilation = 0.5
 
@@ -771,8 +886,8 @@ class EyeProcessor:
                 self.avg_velocity,
                 _brow,
                 self.squeeze,
-                dict(self.next_auxiliary_features.expressions) if self._next_active else {},
-                self.next_auxiliary_features.diagnostics() if self._next_active else {},
+                auxiliary_expressions,
+                auxiliary_diagnostics,
             ),
         )
 
@@ -789,8 +904,8 @@ class EyeProcessor:
                     self.avg_velocity,
                     _brow,
                     self.squeeze,
-                    dict(self.next_auxiliary_features.expressions) if self._next_active else {},
-                    self.next_auxiliary_features.diagnostics() if self._next_active else {},
+                    auxiliary_expressions,
+                    auxiliary_diagnostics,
                 ),
             ),
         )
@@ -865,24 +980,7 @@ class EyeProcessor:
             next_frame = next_frame[:, :mid] if self.eye_id == EyeId.LEFT else next_frame[:, mid:]
 
         if self.settings.gui_pupil_dilation:
-            ellseg_debug_rate = bool(
-                getattr(self.settings, "gui_ellseg_debug_60hz", False)
-            )
-            if self.next_auxiliary_tracker is None:
-                self.next_auxiliary_tracker = NextAuxiliaryTracker(
-                    use_gpu=bool(self.settings.gui_use_gpu),
-                    debug_rate=ellseg_debug_rate,
-                )
-            else:
-                self.next_auxiliary_tracker.set_debug_rate(ellseg_debug_rate)
-            self.next_auxiliary_tracker.set_dilation_output_range(
-                getattr(self.settings, "gui_ellseg_dilation_min_percent", 0) / 100.0,
-                getattr(self.settings, "gui_ellseg_dilation_max_percent", 100) / 100.0,
-            )
-            self.next_auxiliary_tracker.set_preprocess_gamma(
-                getattr(self.settings, "gui_ellseg_gamma_percent", 80) / 100.0
-            )
-            self.next_auxiliary_features = self.next_auxiliary_tracker.update(next_frame)
+            self._update_ellseg_auxiliary()
 
         variant = getattr(self.settings, "gui_model_variant", "ETVR")
         coord = get_stereo_coordinator(variant, self.settings.gui_use_gpu)
