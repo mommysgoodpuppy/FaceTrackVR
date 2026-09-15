@@ -875,6 +875,13 @@ class EyeProcessor:
                 )
             else:
                 self.next_auxiliary_tracker.set_debug_rate(ellseg_debug_rate)
+            self.next_auxiliary_tracker.set_dilation_output_range(
+                getattr(self.settings, "gui_ellseg_dilation_min_percent", 0) / 100.0,
+                getattr(self.settings, "gui_ellseg_dilation_max_percent", 100) / 100.0,
+            )
+            self.next_auxiliary_tracker.set_preprocess_gamma(
+                getattr(self.settings, "gui_ellseg_gamma_percent", 80) / 100.0
+            )
             self.next_auxiliary_features = self.next_auxiliary_tracker.update(next_frame)
 
         variant = getattr(self.settings, "gui_model_variant", "ETVR")

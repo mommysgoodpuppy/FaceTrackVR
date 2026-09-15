@@ -1,3 +1,5 @@
+from pydantic import model_validator
+
 from settings.modules.BaseModule import BaseSettingsModule, BaseValidationModel
 import tkinter as tk
 from tkinter import ttk
@@ -15,6 +17,15 @@ class AdvancedTrackingAlgoSettingsValidationModel(BaseValidationModel):
     gui_thresh_add: int
     gui_pupil_dilation: bool
     gui_ellseg_debug_60hz: bool
+    gui_ellseg_dilation_min_percent: int
+    gui_ellseg_dilation_max_percent: int
+    gui_ellseg_gamma_percent: int
+
+    @model_validator(mode="after")
+    def validate_ellseg_dilation_range(self):
+        if self.gui_ellseg_dilation_min_percent >= self.gui_ellseg_dilation_max_percent:
+            raise ValueError("EllSeg dilation 0% must be below dilation 100%")
+        return self
 
 
 class AdvancedTrackingAlgoSettingsModule(BaseSettingsModule):
@@ -31,6 +42,9 @@ class AdvancedTrackingAlgoSettingsModule(BaseSettingsModule):
         self.gui_HSF_radius_right = f"-HSFRADIUSRIGHT{widget_id}-"
         self.gui_pupil_dilation = f"-EBPD{widget_id}-"
         self.gui_ellseg_debug_60hz = f"-ELLSEGDEBUG60{widget_id}-"
+        self.gui_ellseg_dilation_min_percent = f"-ELLSEGMIN{widget_id}-"
+        self.gui_ellseg_dilation_max_percent = f"-ELLSEGMAX{widget_id}-"
+        self.gui_ellseg_gamma_percent = f"-ELLSEGGAMMA{widget_id}-"
 
     def _add_slider_with_controls(self, parent, row, label, var, min_v, max_v):
         slider_length = 160
@@ -137,6 +151,27 @@ class AdvancedTrackingAlgoSettingsModule(BaseSettingsModule):
                 self.config.gui_thresh_add,
                 1,
                 50,
+            ),
+            (
+                tr("algo_advanced.ellseg_dilation_min"),
+                self.gui_ellseg_dilation_min_percent,
+                self.config.gui_ellseg_dilation_min_percent,
+                0,
+                99,
+            ),
+            (
+                tr("algo_advanced.ellseg_dilation_max"),
+                self.gui_ellseg_dilation_max_percent,
+                self.config.gui_ellseg_dilation_max_percent,
+                1,
+                100,
+            ),
+            (
+                tr("algo_advanced.ellseg_gamma"),
+                self.gui_ellseg_gamma_percent,
+                self.config.gui_ellseg_gamma_percent,
+                50,
+                150,
             ),
         ]
         for label, key, default, min_v, max_v in slider_specs:

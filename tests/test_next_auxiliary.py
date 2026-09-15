@@ -59,3 +59,13 @@ def test_next_auxiliary_debug_mode_submits_on_every_tracking_tick():
     assert debug.sample_count == 2
     assert debug.debug_rate is True
     assert 24.0 < debug.model_rate_hz < 26.0
+
+
+def test_manual_dilation_range_maps_eighty_percent_to_full_output():
+    tracker = NextAuxiliaryTracker(detector=RadiusDetector())
+    tracker.set_dilation_output_range(0.0, 0.8)
+
+    assert tracker._map_dilation_output(0.0) == 0.0
+    assert tracker._map_dilation_output(0.4) == 0.5
+    assert tracker._map_dilation_output(0.8) == 1.0
+    assert tracker._map_dilation_output(1.0) == 1.0

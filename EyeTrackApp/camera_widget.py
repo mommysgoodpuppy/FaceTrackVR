@@ -437,6 +437,7 @@ class CameraWidget:
         self._outlined_text(annotated, state, (8, 35), accent)
 
         dilation = float(np.clip(eye_info.pupil_dilation, 0.0, 1.0))
+        raw_dilation = diagnostics.get("pupil_dilation_raw")
         lid = float(np.clip(eye_info.blink, 0.0, 1.0))
         brow = float(getattr(eye_info, "eyebrow", float("nan")))
         squeeze = float(getattr(eye_info, "squeeze", 0.0))
@@ -446,6 +447,18 @@ class CameraWidget:
         self._outlined_text(
             annotated, metrics, (8, height - 34), (235, 238, 245)
         )
+
+        detail_y = 55
+        if raw_dilation is not None:
+            output_range = diagnostics.get("dilation_output_range", (0.0, 1.0))
+            gamma = float(diagnostics.get("preprocess_gamma", 1.0))
+            mapping_text = (
+                f"RAW {float(raw_dilation):.2f}>DIL {dilation:.2f}"
+                f" MAP {float(output_range[0]) * 100:.0f}-{float(output_range[1]) * 100:.0f}%"
+                f" G{gamma:.2f}"
+            )
+            self._outlined_text(annotated, mapping_text, (8, detail_y), accent)
+            detail_y += 17
 
         center = diagnostics.get("pupil_center")
         axes = diagnostics.get("pupil_axes")
@@ -528,7 +541,7 @@ class CameraWidget:
                 radius_text += (
                     f"   CAL {float(radius_range[0]):.1f}-{float(radius_range[1]):.1f}"
                 )
-            self._outlined_text(annotated, radius_text, (8, 55), accent)
+            self._outlined_text(annotated, radius_text, (8, detail_y), accent)
 
         graph_left, graph_right = 8, width - 8
         graph_top, graph_bottom = height - 27, height - 7

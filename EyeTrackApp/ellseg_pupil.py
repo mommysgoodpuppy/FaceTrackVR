@@ -15,6 +15,7 @@ import queue
 import threading
 from concurrent.futures import Future
 from dataclasses import dataclass
+from functools import lru_cache
 
 import cv2
 import numpy as np
@@ -57,10 +58,10 @@ class _EllSegRuntime:
         )
         self._thread.start()
 
-    def submit(self, frame: np.ndarray) -> Future | None:
+    def submit(self, frame: np.ndarray, gamma: float = 0.8) -> Future | None:
         future = Future()
         try:
-            self._jobs.put_nowait((frame.copy(), future))
+            self._jobs.put_nowait((frame.copy(), future, float(gamma)))
         except queue.Full:
             return None
         return future
@@ -97,14 +98,14 @@ class _EllSegRuntime:
         session = None
         input_name = None
         while True:
-            frame, future = self._jobs.get()
+            frame, future, gamma = self._jobs.get()
             if future.cancelled():
                 continue
             try:
                 if session is None:
                     session = self._create_session()
                     input_name = session.get_inputs()[0].name
-                tensor, transform = _preprocess(frame)
+                tensor, transform = _preprocess(frame, gamma=gamma)
                 if self._uses_directml:
                     with DML_INFERENCE_LOCK:
                         logits = session.run(None, {input_name: tensor})[0]
@@ -139,8 +140,8 @@ class EllSegPupilDetector:
     def set_debug_rate(self, enabled: bool):
         self._debug_rate = bool(enabled)
 
-    def submit(self, frame: np.ndarray) -> Future | None:
-        return _get_runtime(self._use_gpu, self._debug_rate).submit(frame)
+    def submit(self, frame: np.ndarray, gamma: float = 0.8) -> Future | None:
+        return _get_runtime(self._use_gpu, self._debug_rate).submit(frame, gamma)
 
 
 def _create_webgpu_session(model_path):
@@ -191,7 +192,16 @@ class _FrameTransform:
     source_height: int
 
 
-def _preprocess(frame: np.ndarray) -> tuple[np.ndarray, _FrameTransform]:
+@lru_cache(maxsize=32)
+def _gamma_lut(gamma: float) -> np.ndarray:
+    gamma = round(float(np.clip(gamma, 0.5, 1.5)), 3)
+    values = np.arange(256, dtype=np.float32) / 255.0
+    return np.uint8(np.clip(np.power(values, gamma) * 255.0, 0.0, 255.0))
+
+
+def _preprocess(
+    frame: np.ndarray, gamma: float = 0.8
+) -> tuple[np.ndarray, _FrameTransform]:
     if frame.ndim == 2:
         gray = frame
     else:
@@ -199,6 +209,15 @@ def _preprocess(frame: np.ndarray) -> tuple[np.ndarray, _FrameTransform]:
     source_height, source_width = gray.shape[:2]
     if source_height < 2 or source_width < 2:
         raise ValueError("eye frame is empty")
+
+    # EllSeg standardizes each frame, so a linear brightness multiplier would
+    # be cancelled by the later z-score. Gamma is intentionally nonlinear:
+    # values below 1 lift the dark BSB eye-camera shadows while retaining the
+    # pupil/iris separation. It cannot reconstruct eyelashes' occluded pixels;
+    # EllSeg's ellipse prediction handles that missing boundary instead.
+    gamma = float(np.clip(gamma, 0.5, 1.5))
+    if abs(gamma - 1.0) > 1e-3:
+        gray = cv2.LUT(gray, _gamma_lut(gamma))
 
     # Match EllSeg's published inference preprocessing: width-align to 320,
     # center-pad/crop to 240 high, then normalize each image by its own stats.

@@ -465,6 +465,12 @@ class EyeTrackSettingsConfig(BaseModel):
     # Diagnostic mode: request EllSeg inference at camera rate. The background
     # worker drops stale frames when inference is slower, so NEXT never blocks.
     gui_ellseg_debug_60hz: bool = False
+    # Post-auto-calibration input range mapped onto VRChat's 0..1 dilation.
+    # For example, max=80 makes a measured 0.80 send as 1.00.
+    gui_ellseg_dilation_min_percent: int = 0
+    gui_ellseg_dilation_max_percent: int = 100
+    # Nonlinear EllSeg input gamma; below 100 brightens BSB camera shadows.
+    gui_ellseg_gamma_percent: int = 80
 
     gui_VRCFTModulePort: int = 8889
     gui_VRCFTModuleIPAddress: str = "127.0.0.1"

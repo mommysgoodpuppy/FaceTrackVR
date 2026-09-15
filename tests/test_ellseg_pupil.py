@@ -21,6 +21,18 @@ def test_preprocess_width_aligns_and_center_crops_square_bsb_frame():
     assert abs(float(tensor.std()) - 1.0) < 1e-5
 
 
+def test_bsb_gamma_brightening_is_nonlinear_and_remains_standardized():
+    ramp = np.tile(np.arange(256, dtype=np.uint8), (192, 1))
+
+    brightened, _transform = _preprocess(ramp, gamma=0.8)
+    neutral, _transform = _preprocess(ramp, gamma=1.0)
+
+    assert brightened.shape == neutral.shape == (1, 1, 240, 320)
+    assert abs(float(brightened.mean())) < 1e-5
+    assert abs(float(brightened.std()) - 1.0) < 1e-5
+    assert not np.allclose(brightened, neutral)
+
+
 def test_measurement_uses_pupil_to_iris_ratio_to_cancel_ellipse_angle():
     labels = np.zeros((240, 320), dtype=np.uint8)
     cv2.ellipse(labels, (160, 120), (80, 40), 28, 0, 360, 1, -1)

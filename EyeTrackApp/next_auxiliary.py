@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class AuxiliaryEyeFeatures:
     pupil_dilation: float | None = None
+    pupil_dilation_raw: float | None = None
     pupil_locked: bool = False
     pupil_center: tuple[float, float] | None = None
     pupil_axes: tuple[float, float] | None = None
@@ -42,11 +43,14 @@ class AuxiliaryEyeFeatures:
     detector_name: str = "EllSeg"
     model_rate_hz: float = 0.0
     debug_rate: bool = False
+    dilation_output_range: tuple[float, float] = (0.0, 1.0)
+    preprocess_gamma: float = 0.8
     expressions: dict[str, float] = field(default_factory=dict)
 
     def diagnostics(self) -> dict:
         return {
             "pupil_locked": self.pupil_locked,
+            "pupil_dilation_raw": self.pupil_dilation_raw,
             "pupil_center": self.pupil_center,
             "pupil_axes": self.pupil_axes,
             "pupil_angle_degrees": self.pupil_angle_degrees,
@@ -62,6 +66,8 @@ class AuxiliaryEyeFeatures:
             "detector_name": self.detector_name,
             "model_rate_hz": self.model_rate_hz,
             "debug_rate": self.debug_rate,
+            "dilation_output_range": self.dilation_output_range,
+            "preprocess_gamma": self.preprocess_gamma,
         }
 
 
@@ -90,12 +96,20 @@ class NextAuxiliaryTracker:
         minimum_samples: int = 4,
         use_gpu: bool = False,
         debug_rate: bool = False,
+        dilation_min: float = 0.0,
+        dilation_max: float = 1.0,
+        preprocess_gamma: float = 0.8,
     ):
         self._detector = (
             detector if detector is not None else EllSegPupilDetector(use_gpu=use_gpu, debug_rate=debug_rate)
         )
         self._normal_rate_hz = max(0.1, float(rate_hz))
         self._debug_rate = bool(debug_rate)
+        self._dilation_min = 0.0
+        self._dilation_max = 1.0
+        self._preprocess_gamma = 0.8
+        self.set_dilation_output_range(dilation_min, dilation_max)
+        self.set_preprocess_gamma(preprocess_gamma)
         # Debug mode submits on every tracking tick when the worker is free.
         # With a 60 Hz camera this targets 60 Hz without building a stale-frame
         # queue when the selected ONNX provider cannot keep up.
@@ -133,6 +147,20 @@ class NextAuxiliaryTracker:
         if self._asynchronous_detector:
             self._detector.set_debug_rate(self._debug_rate)
 
+    def set_dilation_output_range(self, minimum: float, maximum: float):
+        """Map the selected measured-dilation range onto the 0..1 output."""
+        minimum = float(np.clip(minimum, 0.0, 0.99))
+        maximum = float(np.clip(maximum, 0.01, 1.0))
+        if maximum <= minimum:
+            maximum = min(1.0, minimum + 0.01)
+            minimum = min(minimum, maximum - 0.01)
+        self._dilation_min = minimum
+        self._dilation_max = maximum
+
+    def set_preprocess_gamma(self, gamma: float):
+        """Set nonlinear input brightening (values below 1 brighten shadows)."""
+        self._preprocess_gamma = float(np.clip(gamma, 0.5, 1.5))
+
     def update(self, bgr_frame: np.ndarray, now: float | None = None) -> AuxiliaryEyeFeatures:
         now = time.monotonic() if now is None else float(now)
         try:
@@ -151,7 +179,9 @@ class NextAuxiliaryTracker:
             if now - self._last_run >= self._interval:
                 if self._asynchronous_detector:
                     if self._future is None:
-                        submitted = self._detector.submit(bgr_frame)
+                        submitted = self._detector.submit(
+                            bgr_frame, gamma=self._preprocess_gamma
+                        )
                         if submitted is not None:
                             self._future = submitted
                             self._last_run = now
@@ -172,8 +202,10 @@ class NextAuxiliaryTracker:
 
             self._advance_interpolation(now)
             locked = self._geometry is not None and (now - self._last_measurement <= max(3.0, self._interval * 3.0))
+            mapped_dilation = self._map_dilation_output(self._smoothed)
             self._features = AuxiliaryEyeFeatures(
-                pupil_dilation=self._smoothed,
+                pupil_dilation=mapped_dilation,
+                pupil_dilation_raw=self._smoothed,
                 pupil_locked=locked,
                 pupil_center=self._geometry.center if locked else None,
                 pupil_axes=self._geometry.axes if locked else None,
@@ -190,6 +222,8 @@ class NextAuxiliaryTracker:
                 detector_name=self._detector_name,
                 model_rate_hz=self._measured_rate_hz(),
                 debug_rate=self._debug_rate,
+                dilation_output_range=(self._dilation_min, self._dilation_max),
+                preprocess_gamma=self._preprocess_gamma,
                 expressions=self._features.expressions,
             )
         except (
@@ -204,6 +238,10 @@ class NextAuxiliaryTracker:
                 logger.warning("NEXT auxiliary pupil detection failed: %s", exc)
                 self._warning_logged = True
         return self._features
+
+    def _map_dilation_output(self, value: float) -> float:
+        span = self._dilation_max - self._dilation_min
+        return float(np.clip((float(value) - self._dilation_min) / span, 0.0, 1.0))
 
     def _accept_ellseg(
         self,
