@@ -166,6 +166,9 @@ class CameraWidget:
         self._debug_image_visible = None  # None = uninitialized; True/False tracks current pack state
         self._preview_dim = 200
         self._eye_preview_photo = None
+        self._dilation_history = deque(maxlen=120)
+        self._radius_history = deque(maxlen=120)
+        self._last_aux_sample_count = -1
         # 'new' while drawing a fresh box; a handle id ('tl','tr','bl','br','t','b','l','r') while resizing
         self._drag_handle = "new"
         self._resize_anchor = None   # fixed corner (np.array) for corner drags
@@ -225,7 +228,7 @@ class CameraWidget:
 
         # Source stack from processor is 300×150; compact display for dual-eye layout
         self._tracking_display_size = (round(380 * dpi_scale), round(190 * dpi_scale))
-        self._preview_dim = round(200 * dpi_scale)
+        self._preview_dim = round(300 * dpi_scale)
 
         self._viz_pad = round(8 * dpi_scale)
         self._viz_gaze_gap = round(6 * dpi_scale)
@@ -392,6 +395,149 @@ class CameraWidget:
             return tk_photo_from_rgb(rgb, master)
         except (ValueError, TypeError, tk.TclError):
             return None
+
+    @staticmethod
+    def _outlined_text(image, text, origin, color, scale=0.42, thickness=1):
+        cv2.putText(
+            image, text, origin, cv2.FONT_HERSHEY_SIMPLEX, scale,
+            (0, 0, 0), thickness + 2, cv2.LINE_AA,
+        )
+        cv2.putText(
+            image, text, origin, cv2.FONT_HERSHEY_SIMPLEX, scale,
+            color, thickness, cv2.LINE_AA,
+        )
+
+    def _annotate_tracking_preview(self, image: np.ndarray, eye_info: EyeInfo) -> np.ndarray:
+        """Overlay live NEXT and auxiliary-pupil diagnostics on a preview."""
+        if image.ndim == 2:
+            annotated = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+        else:
+            annotated = image.copy()
+        height, width = annotated.shape[:2]
+        diagnostics = getattr(eye_info, "auxiliary_diagnostics", {}) or {}
+        locked = bool(diagnostics.get("pupil_locked", False))
+        accent = (115, 238, 167) if locked else (90, 180, 255)
+        eye_name = "LEFT" if self.eye_id == EyeId.LEFT else "RIGHT"
+        tracker_name = getattr(eye_info.info_type, "name", str(eye_info.info_type))
+
+        cv2.rectangle(annotated, (0, 0), (width, 42), (18, 20, 25), -1)
+        state = "PUPIL LOCK" if locked else "PUPIL SEARCH"
+        self._outlined_text(
+            annotated, f"{eye_name}  {tracker_name}", (8, 16), (235, 238, 245)
+        )
+        self._outlined_text(annotated, state, (8, 35), accent)
+
+        dilation = float(np.clip(eye_info.pupil_dilation, 0.0, 1.0))
+        lid = float(np.clip(eye_info.blink, 0.0, 1.0))
+        brow = float(getattr(eye_info, "eyebrow", float("nan")))
+        squeeze = float(getattr(eye_info, "squeeze", 0.0))
+        metrics = f"DIL {dilation:.2f}   LID {lid:.2f}   SQ {squeeze:.2f}"
+        if np.isfinite(brow):
+            metrics += f"   BR {brow:.2f}"
+        self._outlined_text(
+            annotated, metrics, (8, height - 34), (235, 238, 245)
+        )
+
+        center = diagnostics.get("pupil_center")
+        axes = diagnostics.get("pupil_axes")
+        frame_size = diagnostics.get("frame_size")
+        if locked and center and axes and frame_size:
+            source_w, source_h = frame_size
+            scale_x = width / max(1.0, float(source_w))
+            scale_y = height / max(1.0, float(source_h))
+            pupil_center = (
+                int(round(float(center[0]) * scale_x)),
+                int(round(float(center[1]) * scale_y)),
+            )
+            pupil_axes = (
+                max(2, int(round(float(axes[0]) * scale_x / 2.0))),
+                max(2, int(round(float(axes[1]) * scale_y / 2.0))),
+            )
+            cv2.ellipse(
+                annotated,
+                pupil_center,
+                pupil_axes,
+                float(diagnostics.get("pupil_angle_degrees", 0.0)),
+                0,
+                360,
+                accent,
+                2,
+                cv2.LINE_AA,
+            )
+            cv2.drawMarker(
+                annotated,
+                pupil_center,
+                (255, 255, 255),
+                cv2.MARKER_CROSS,
+                12,
+                1,
+                cv2.LINE_AA,
+            )
+
+        sample_count = int(diagnostics.get("sample_count", 0) or 0)
+        radius = diagnostics.get("pupil_radius_px")
+        if sample_count != self._last_aux_sample_count and radius is not None:
+            self._last_aux_sample_count = sample_count
+            self._dilation_history.append(dilation)
+            self._radius_history.append(float(radius))
+
+        radius_range = diagnostics.get("radius_range")
+        if radius is not None:
+            radius_text = f"R {float(radius):.1f}px"
+            if radius_range:
+                radius_text += (
+                    f"   CAL {float(radius_range[0]):.1f}-{float(radius_range[1]):.1f}"
+                )
+            self._outlined_text(annotated, radius_text, (8, 55), accent)
+
+        graph_left, graph_right = 8, width - 8
+        graph_top, graph_bottom = height - 27, height - 7
+        cv2.rectangle(
+            annotated,
+            (graph_left, graph_top),
+            (graph_right, graph_bottom),
+            (35, 38, 46),
+            -1,
+        )
+        if len(self._dilation_history) > 1:
+            values = list(self._dilation_history)
+            points = []
+            for index, value in enumerate(values):
+                px = graph_left + int(
+                    index * (graph_right - graph_left) / (len(values) - 1)
+                )
+                py = graph_bottom - int(float(value) * (graph_bottom - graph_top))
+                points.append((px, py))
+            cv2.polylines(
+                annotated,
+                [np.asarray(points, dtype=np.int32)],
+                False,
+                accent,
+                1,
+                cv2.LINE_AA,
+            )
+
+        # Mini gaze reticle is independent from the pupil outline: it shows
+        # NEXT's output vector while the ellipse shows the image-space detector.
+        reticle_radius = max(18, round(width * 0.09))
+        reticle_center = (width - reticle_radius - 9, reticle_radius + 8)
+        cv2.circle(annotated, reticle_center, reticle_radius, (105, 110, 126), 1)
+        gaze_x = float(np.clip(eye_info.x, -1.0, 1.0))
+        gaze_y = float(np.clip(eye_info.y, -1.0, 1.0))
+        gaze_point = (
+            int(reticle_center[0] - gaze_x * (reticle_radius - 4)),
+            int(reticle_center[1] - gaze_y * (reticle_radius - 4)),
+        )
+        cv2.arrowedLine(
+            annotated,
+            reticle_center,
+            gaze_point,
+            (196, 173, 255),
+            2,
+            cv2.LINE_AA,
+            tipLength=0.25,
+        )
+        return annotated
 
     def _hide_output_viz(self) -> None:
         """Hide all visualization items inside the canvas without unpacking the canvas."""
@@ -1269,6 +1415,7 @@ class CameraWidget:
                     _eye_img = maybe_image[:, :maybe_image.shape[1] // 2] if maybe_image.ndim == 2 else maybe_image
                     _interp = cv2.INTER_AREA if _eye_img.shape[0] > _dim else cv2.INTER_LINEAR
                     _preview = cv2.resize(_eye_img, (_dim, _dim), interpolation=_interp)
+                    _preview = self._annotate_tracking_preview(_preview, eye_info)
                     _preview_photo = self._tk_photo_from_bgr(_preview, self._eye_preview_widget)
                     if _preview_photo is not None:
                         self._eye_preview_photo = _preview_photo

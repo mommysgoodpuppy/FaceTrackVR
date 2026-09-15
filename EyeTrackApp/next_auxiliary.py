@@ -26,7 +26,35 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class AuxiliaryEyeFeatures:
     pupil_dilation: float | None = None
+    pupil_locked: bool = False
+    pupil_center: tuple[float, float] | None = None
+    pupil_axes: tuple[float, float] | None = None
+    pupil_angle_degrees: float = 0.0
+    pupil_radius_px: float | None = None
+    frame_size: tuple[int, int] | None = None
+    radius_range: tuple[float, float] | None = None
+    sample_count: int = 0
     expressions: dict[str, float] = field(default_factory=dict)
+
+    def diagnostics(self) -> dict:
+        return {
+            "pupil_locked": self.pupil_locked,
+            "pupil_center": self.pupil_center,
+            "pupil_axes": self.pupil_axes,
+            "pupil_angle_degrees": self.pupil_angle_degrees,
+            "pupil_radius_px": self.pupil_radius_px,
+            "frame_size": self.frame_size,
+            "radius_range": self.radius_range,
+            "sample_count": self.sample_count,
+        }
+
+
+@dataclass(frozen=True)
+class PupilGeometry:
+    center: tuple[float, float]
+    axes: tuple[float, float]
+    angle_degrees: float
+    equivalent_radius: float
 
 
 class NextAuxiliaryTracker:
@@ -50,6 +78,7 @@ class NextAuxiliaryTracker:
         self._radii = deque(maxlen=max(minimum_samples, history_size))
         self._minimum_samples = minimum_samples
         self._smoothed = 0.5
+        self._radius_range: tuple[float, float] | None = None
         self._features = AuxiliaryEyeFeatures(pupil_dilation=0.5)
         self._warning_logged = False
 
@@ -73,13 +102,33 @@ class NextAuxiliaryTracker:
                 # signal this sidecar exists to measure.
                 self._detector = External_Run_HSF(False)
             center_x, center_y, _preview, _search_radius = self._detector.run(gray)
-            radius = self._measure_pupil_radius(gray, center_x, center_y)
-            if radius is None:
+            geometry = self._measure_pupil_geometry(gray, center_x, center_y)
+            if geometry is None:
+                self._features = AuxiliaryEyeFeatures(
+                    pupil_dilation=self._features.pupil_dilation,
+                    frame_size=(gray.shape[1], gray.shape[0]),
+                    radius_range=self._radius_range,
+                    sample_count=len(self._radii),
+                    expressions=self._features.expressions,
+                )
                 return self._features
-            dilation = self._normalize_radius(radius, center_x, center_y, gray.shape)
+            dilation = self._normalize_radius(
+                geometry.equivalent_radius,
+                geometry.center[0],
+                geometry.center[1],
+                gray.shape,
+            )
             if dilation is not None:
                 self._features = AuxiliaryEyeFeatures(
                     pupil_dilation=dilation,
+                    pupil_locked=True,
+                    pupil_center=geometry.center,
+                    pupil_axes=geometry.axes,
+                    pupil_angle_degrees=geometry.angle_degrees,
+                    pupil_radius_px=geometry.equivalent_radius,
+                    frame_size=(gray.shape[1], gray.shape[0]),
+                    radius_range=self._radius_range,
+                    sample_count=len(self._radii),
                     expressions=self._features.expressions,
                 )
             self._warning_logged = False
@@ -90,7 +139,9 @@ class NextAuxiliaryTracker:
         return self._features
 
     @staticmethod
-    def _measure_pupil_radius(gray: np.ndarray, center_x, center_y) -> float | None:
+    def _measure_pupil_geometry(
+        gray: np.ndarray, center_x, center_y
+    ) -> PupilGeometry | None:
         """Measure the dark pupil contour near HSF's located center.
 
         HSF's returned radius controls its search kernel and is intentionally
@@ -138,12 +189,29 @@ class NextAuxiliaryTracker:
             distance = math.hypot(contour_x - local_x, contour_y - local_y)
             if distance > half * 0.55:
                 continue
-            candidates.append((distance, -area, area))
+            candidates.append((distance, -area, area, contour))
 
         if not candidates:
             return None
-        _distance, _negative_area, area = min(candidates)
-        return math.sqrt(area / math.pi)
+        _distance, _negative_area, area, contour = min(candidates, key=lambda item: item[:2])
+        moments = cv2.moments(contour)
+        pupil_x = x0 + moments["m10"] / moments["m00"]
+        pupil_y = y0 + moments["m01"] / moments["m00"]
+        equivalent_radius = math.sqrt(area / math.pi)
+        if len(contour) >= 5:
+            (_ellipse_x, _ellipse_y), axes, angle = cv2.fitEllipse(contour)
+            axes = (float(axes[0]), float(axes[1]))
+            angle = float(angle)
+        else:
+            diameter = equivalent_radius * 2.0
+            axes = (diameter, diameter)
+            angle = 0.0
+        return PupilGeometry(
+            center=(float(pupil_x), float(pupil_y)),
+            axes=axes,
+            angle_degrees=angle,
+            equivalent_radius=equivalent_radius,
+        )
 
     def _normalize_radius(self, radius, center_x, center_y, frame_shape) -> float | None:
         radius = float(radius)
@@ -164,6 +232,7 @@ class NextAuxiliaryTracker:
             target = 0.5
         else:
             low, high = np.percentile(np.asarray(self._radii), [5.0, 95.0])
+            self._radius_range = (float(low), float(high))
             span = float(high - low)
             # Until the observed pupil actually changes, neutral is more
             # honest than amplifying detector noise into full-range dilation.

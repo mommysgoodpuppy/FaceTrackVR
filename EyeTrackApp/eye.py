@@ -62,3 +62,4 @@ class EyeInfo:
     # Unified Expressions shape names supplied by optional trackers. NEXT's
     # own gaze/lid/brow/squeeze channels retain priority in the OSC merger.
     auxiliary_expressions: dict[str, float] = field(default_factory=dict)
+    auxiliary_diagnostics: dict[str, object] = field(default_factory=dict)

@@ -772,6 +772,7 @@ class EyeProcessor:
                 _brow,
                 self.squeeze,
                 dict(self.next_auxiliary_features.expressions) if self._next_active else {},
+                self.next_auxiliary_features.diagnostics() if self._next_active else {},
             ),
         )
 
@@ -789,6 +790,7 @@ class EyeProcessor:
                     _brow,
                     self.squeeze,
                     dict(self.next_auxiliary_features.expressions) if self._next_active else {},
+                    self.next_auxiliary_features.diagnostics() if self._next_active else {},
                 ),
             ),
         )
