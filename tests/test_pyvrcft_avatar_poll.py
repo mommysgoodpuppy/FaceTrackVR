@@ -2,6 +2,9 @@ from unittest import mock
 
 from pyvrcft.avatar import AvatarInfo, AvatarParameter
 from pyvrcft.client import VRCFTClient
+from osc.OSCMessage import OSCMessage, OSCMessageType
+from osc.PyVRCFTSender import PyVRCFTSender
+from tests import EyeInfoMock
 
 
 def _avatar(avatar_id: str) -> AvatarInfo:
@@ -73,3 +76,34 @@ def test_oscquery_stops_polling_when_avatar_change_receiver_is_available():
 
     assert client.avatar.id == "ready"
     client._wait_while_running.assert_not_called()
+
+
+def test_pyvrcft_forwards_normalized_dilation_without_second_normalization():
+    sender = PyVRCFTSender()
+    sender.client = mock.Mock()
+    config = mock.Mock(osc_invert_eye_close=False)
+    main_config = mock.Mock(eye_display_id=2)
+    eye_info = EyeInfoMock(
+        x=0.1,
+        y=-0.2,
+        blink=0.8,
+        pupil_dilation=0.7,
+        avg_velocity=0.0,
+    )
+    eye_info.auxiliary_expressions = {"EyeWideLeft": 0.4, "EyeSquintLeft": 0.9}
+
+    sender.output_osc_info(
+        OSCMessage(OSCMessageType.EYE_INFO, (1, eye_info)),
+        main_config,
+        config,
+    )
+    sender.output_osc_info(
+        OSCMessage(OSCMessageType.EYE_INFO, (0, eye_info)),
+        main_config,
+        config,
+    )
+
+    sender.client.set.assert_called_with("PupilDilation", 0.7)
+    assert sender.data.shapes["EyeWideLeft"] == 0.4
+    # NEXT's squeeze-derived value owns this channel.
+    assert sender.data.shapes["EyeSquintLeft"] == 0.0

@@ -58,6 +58,7 @@ from ellipse_based_pupil_dilation import *
 from AHSF import *
 from osc.OSCMessage import OSCMessageType, OSCMessage
 from eyebrow import EyeBrow
+from next_auxiliary import AuxiliaryEyeFeatures, NextAuxiliaryTracker
 from utils.calibration_elipse import *
 from utils.runtime_state import set_value as _set_runtime_value
 from utils.robust_calibration import RobustCalibrationSession, CalibrationPhase
@@ -265,6 +266,8 @@ class EyeProcessor:
         self.daddy_runner = None
         self.leap_runner = None
         self.next_runner = None
+        self.next_auxiliary_tracker: NextAuxiliaryTracker | None = None
+        self.next_auxiliary_features = AuxiliaryEyeFeatures(pupil_dilation=0.5)
         # None until the first NEXT frame picks mono or stereo; only used to
         # log the transitions.
         self._next_stereo_engaged: bool | None = None
@@ -725,7 +728,15 @@ class EyeProcessor:
             # self.out_x = sum(self.prev_x_list) / len(self.prev_x_list)
             self.out_y = sum(self.prev_y_list) / len(self.prev_y_list)
 
-        if self.settings.gui_pupil_dilation:
+        if self.settings.gui_pupil_dilation and self._next_active:
+            # NEXT has no pupil-size output. Its auxiliary HSF sidecar measures
+            # radius without replacing NEXT gaze or expressions.
+            self.pupil_dilation = float(
+                self.next_auxiliary_features.pupil_dilation
+                if self.next_auxiliary_features.pupil_dilation is not None
+                else 0.5
+            )
+        elif self.settings.gui_pupil_dilation:
             self._ensure_pupil_axes_for_dilation()
             self.pupil_dilation = self.ebpd.intense(
                 self.pupil_width,
@@ -760,6 +771,7 @@ class EyeProcessor:
                 self.avg_velocity,
                 _brow,
                 self.squeeze,
+                dict(self.next_auxiliary_features.expressions) if self._next_active else {},
             ),
         )
 
@@ -776,6 +788,7 @@ class EyeProcessor:
                     self.avg_velocity,
                     _brow,
                     self.squeeze,
+                    dict(self.next_auxiliary_features.expressions) if self._next_active else {},
                 ),
             ),
         )
@@ -848,6 +861,11 @@ class EyeProcessor:
         if self.settings.gui_setup_mode == "bigscreen":
             mid = next_frame.shape[1] // 2
             next_frame = next_frame[:, :mid] if self.eye_id == EyeId.LEFT else next_frame[:, mid:]
+
+        if self.settings.gui_pupil_dilation:
+            if self.next_auxiliary_tracker is None:
+                self.next_auxiliary_tracker = NextAuxiliaryTracker()
+            self.next_auxiliary_features = self.next_auxiliary_tracker.update(next_frame)
 
         variant = getattr(self.settings, "gui_model_variant", "ETVR")
         coord = get_stereo_coordinator(variant, self.settings.gui_use_gpu)

@@ -24,7 +24,7 @@ LICENSE: Babble Software Distribution License 1.0
 ------------------------------------------------------------------------------------------------------
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, IntEnum
 
 
@@ -59,3 +59,6 @@ class EyeInfo:
     avg_velocity: float
     eyebrow: float = float("nan")
     squeeze: float = 0.0
+    # Unified Expressions shape names supplied by optional trackers. NEXT's
+    # own gaze/lid/brow/squeeze channels retain priority in the OSC merger.
+    auxiliary_expressions: dict[str, float] = field(default_factory=dict)

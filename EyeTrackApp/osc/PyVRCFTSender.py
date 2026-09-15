@@ -23,9 +23,23 @@ from eye import EyeId
 from osc.OSCMessage import OSCMessage
 from osc.VRChatOSCSender import VRChatOSCSender
 
-from pyvrcft import UnifiedTrackingData, VRCFTClient
+from pyvrcft import UNIFIED_EXPRESSIONS, UnifiedTrackingData, VRCFTClient
 
 logger = logging.getLogger(__name__)
+
+# These channels are produced by NEXT itself. An auxiliary model may add other
+# Unified Expressions shapes, but must not silently override the primary model.
+NEXT_OWNED_SHAPES = {
+    "BrowInnerUpLeft",
+    "BrowInnerUpRight",
+    "BrowOuterUpLeft",
+    "BrowOuterUpRight",
+    "CheekSquintLeft",
+    "CheekSquintRight",
+    "EyeSquintLeft",
+    "EyeSquintRight",
+}
+UNIFIED_EXPRESSION_SET = frozenset(UNIFIED_EXPRESSIONS)
 
 
 class PyVRCFTSender:
@@ -121,9 +135,21 @@ class PyVRCFTSender:
             self.data.shapes["EyeSquintRight"] = squeeze
             self.data.shapes["CheekSquintRight"] = squeeze
 
+        for name, value in getattr(eye_info, "auxiliary_expressions", {}).items():
+            if name in UNIFIED_EXPRESSION_SET and name not in NEXT_OWNED_SHAPES:
+                self.data.shapes[name] = float(value)
+
         # Recomputes the full v2 parameter set from the shared frame and queues
         # only changed values; the port's send thread puts them on the wire.
         self.client.update_tracking(self.data)
+        # EyeTrackVR already reports normalized dilation. VRCFT's input normally
+        # contains physical millimetres and its expression pipeline normalizes
+        # those again; bypass that second normalization for this one channel.
+        normalized_dilation = (
+            self.data.eye.left.pupil_diameter_mm
+            + self.data.eye.right.pupil_diameter_mm
+        ) / 2.0
+        self.client.set("PupilDilation", normalized_dilation)
 
     def output_eyebrow_info(self, eye_id, brow_val: float, main_config):
         if self.client is None:
