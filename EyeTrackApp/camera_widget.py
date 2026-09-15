@@ -487,7 +487,7 @@ class CameraWidget:
                 0,
                 360,
                 accent,
-                2,
+                1,
                 cv2.LINE_AA,
             )
             cv2.drawMarker(
