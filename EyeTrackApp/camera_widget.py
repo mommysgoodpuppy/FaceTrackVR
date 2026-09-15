@@ -168,7 +168,6 @@ class CameraWidget:
         self._eye_preview_photo = None
         self._dilation_history = deque(maxlen=120)
         self._radius_history = deque(maxlen=120)
-        self._last_aux_sample_count = -1
         # 'new' while drawing a fresh box; a handle id ('tl','tr','bl','br','t','b','l','r') while resizing
         self._drag_handle = "new"
         self._resize_anchor = None   # fixed corner (np.array) for corner drags
@@ -573,11 +572,14 @@ class CameraWidget:
                 cv2.LINE_AA,
             )
 
-        sample_count = int(diagnostics.get("sample_count", 0) or 0)
         radius = diagnostics.get("pupil_radius_px")
-        if sample_count != self._last_aux_sample_count and radius is not None:
-            self._last_aux_sample_count = sample_count
+        # This graph represents the smoothly interpolated value actually sent
+        # downstream, not the detector's bounded calibration-history length.
+        # The old sample_count gate froze forever once its 300-entry deque was
+        # full (about five seconds in 60 Hz debug mode).
+        if diagnostics.get("pupil_dilation_mapped") is not None:
             self._dilation_history.append(dilation)
+        if radius is not None:
             self._radius_history.append(float(radius))
 
         radius_range = diagnostics.get("radius_range")
