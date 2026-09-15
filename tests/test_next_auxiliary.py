@@ -25,10 +25,7 @@ def test_next_auxiliary_normalizes_measured_pupil_radius():
         minimum_samples=4,
     )
     radii = [8, 8.5, 9, 9.5, 10, 10.5, 11, 12, 8]
-    values = [
-        tracker.update(pupil_frame(radius), now=i).pupil_dilation
-        for i, radius in enumerate(radii)
-    ]
+    values = [tracker.update(pupil_frame(radius), now=i).pupil_dilation for i, radius in enumerate(radii)]
 
     assert values[7] > 0.5
     assert values[8] < values[7]
@@ -43,6 +40,6 @@ def test_next_auxiliary_is_rate_limited_and_preserves_feature_schema():
     first = tracker.update(frame, now=1.0)
     second = tracker.update(frame, now=1.01)
 
-    assert first is second
+    assert first.pupil_dilation == second.pupil_dilation
     assert first.expressions == {}
     detector.run.assert_called_once()

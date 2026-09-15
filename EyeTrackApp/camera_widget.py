@@ -419,9 +419,12 @@ class CameraWidget:
         accent = (115, 238, 167) if locked else (90, 180, 255)
         eye_name = "LEFT" if self.eye_id == EyeId.LEFT else "RIGHT"
         tracker_name = getattr(eye_info.info_type, "name", str(eye_info.info_type))
+        detector_name = str(diagnostics.get("detector_name", "")).upper()
 
         cv2.rectangle(annotated, (0, 0), (width, 42), (18, 20, 25), -1)
         state = "PUPIL LOCK" if locked else "PUPIL SEARCH"
+        if detector_name:
+            state += f"  {detector_name}"
         self._outlined_text(
             annotated, f"{eye_name}  {tracker_name}", (8, 16), (235, 238, 245)
         )
@@ -440,11 +443,34 @@ class CameraWidget:
 
         center = diagnostics.get("pupil_center")
         axes = diagnostics.get("pupil_axes")
+        iris_center = diagnostics.get("iris_center")
+        iris_axes = diagnostics.get("iris_axes")
         frame_size = diagnostics.get("frame_size")
         if locked and center and axes and frame_size:
             source_w, source_h = frame_size
             scale_x = width / max(1.0, float(source_w))
             scale_y = height / max(1.0, float(source_h))
+            if iris_center and iris_axes:
+                display_iris_center = (
+                    int(round(float(iris_center[0]) * scale_x)),
+                    int(round(float(iris_center[1]) * scale_y)),
+                )
+                display_iris_axes = (
+                    max(2, int(round(float(iris_axes[0]) * scale_x / 2.0))),
+                    max(2, int(round(float(iris_axes[1]) * scale_y / 2.0))),
+                )
+                # Outline only: keep the underlying IR image fully visible.
+                cv2.ellipse(
+                    annotated,
+                    display_iris_center,
+                    display_iris_axes,
+                    float(diagnostics.get("iris_angle_degrees", 0.0)),
+                    0,
+                    360,
+                    (180, 150, 90),
+                    1,
+                    cv2.LINE_AA,
+                )
             pupil_center = (
                 int(round(float(center[0]) * scale_x)),
                 int(round(float(center[1]) * scale_y)),
@@ -482,9 +508,17 @@ class CameraWidget:
             self._radius_history.append(float(radius))
 
         radius_range = diagnostics.get("radius_range")
+        pupil_ratio = diagnostics.get("pupil_to_iris_ratio")
+        ratio_range = diagnostics.get("ratio_range")
         if radius is not None:
             radius_text = f"R {float(radius):.1f}px"
-            if radius_range:
+            if pupil_ratio is not None:
+                radius_text += f"   P/I {float(pupil_ratio):.3f}"
+            if ratio_range:
+                radius_text += (
+                    f"   CAL {float(ratio_range[0]):.3f}-{float(ratio_range[1]):.3f}"
+                )
+            elif radius_range:
                 radius_text += (
                     f"   CAL {float(radius_range[0]):.1f}-{float(radius_range[1]):.1f}"
                 )
