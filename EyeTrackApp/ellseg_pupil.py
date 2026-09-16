@@ -181,7 +181,7 @@ def _create_webgpu_session(model_path):
         session = onnxruntime.InferenceSession(model_path, sess_options=options)
         logger.info("EllSeg pupil WebGPU providers: %s", session.get_providers())
         return session
-    except (ImportError, AttributeError, RuntimeError, onnxruntime.OnnxRuntimeException) as exc:
+    except Exception as exc:
         logger.warning(
             "EllSeg WebGPU unavailable (%s); using ONNX Runtime CPU fallback.",
             exc,

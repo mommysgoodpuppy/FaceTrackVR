@@ -10,6 +10,7 @@
 import sys ; sys.setrecursionlimit(sys.getrecursionlimit() * 5)
 from pathlib import Path
 import openvr
+import onnxruntime_ep_webgpu
 
 block_cipher = None
 
@@ -25,11 +26,16 @@ resources = [
 # The pyopenvr wheel bundles per-arch shared libs next to openvr/__init__.py.
 _openvr_dir = Path(openvr.__file__).parent
 openvr_libs = [(str(p), "openvr") for p in _openvr_dir.glob("libopenvr_api*.so")]
+_webgpu_dir = Path(onnxruntime_ep_webgpu.__file__).parent
+webgpu_libs = [
+    (str(p), "onnxruntime_ep_webgpu")
+    for p in _webgpu_dir.glob("libonnxruntime_providers_webgpu.so")
+]
 
 a = Analysis(
     ["eyetrackapp.py"],
     pathex=[],
-    binaries=openvr_libs,
+    binaries=openvr_libs + webgpu_libs,
     datas=resources,
     # PIL._tkinter_finder is the Pillow <-> Tk bridge that registers the
     # PyImagingPhoto Tcl command. PyInstaller does not see it (ImageTk imports
@@ -38,6 +44,7 @@ a = Analysis(
     hiddenimports=[
         "cv2", "numpy", "sv_ttk", "tkinter", "tkinter.ttk",
         "PIL.Image", "PIL.ImageTk", "PIL._tkinter_finder",
+        "onnxruntime_ep_webgpu",
     ],
     hookspath=[],
     hooksconfig={},
