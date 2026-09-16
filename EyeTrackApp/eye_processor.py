@@ -316,6 +316,11 @@ class EyeProcessor:
         self.angle = 621
         self.ahsf_runner = None
         self.eyebrow_runner: EyeBrow | None = None
+        # If the optional model for the selected variant is absent or cannot
+        # initialize, remember that failure instead of reopening the model and
+        # logging twice on every camera frame. Changing the model variant or
+        # toggling the feature off clears the retry guard.
+        self._eyebrow_failed_variant: str | None = None
         self.cal = CalibrationEllipse()
         self.squeeze = 0.0
         self.ahsf_detector = PupilDetectorHaar()
@@ -1402,13 +1407,17 @@ class EyeProcessor:
         if self.eyebrow_runner is not None and getattr(self.eyebrow_runner, "variant", None) != variant:
             self.eyebrow_runner.stop()
             self.eyebrow_runner = None
+        if self._eyebrow_failed_variant == variant:
+            return
         if self.eyebrow_runner is None:
             try:
                 self.eyebrow_runner = EyeBrow(variant)
             except Exception as e:
                 logger.warning("EyeBrow init failed: %s", e)
                 self.eyebrow_runner = None
+                self._eyebrow_failed_variant = variant
                 return
+            self._eyebrow_failed_variant = None
         if self.settings.gui_setup_mode == "bigscreen":
             mid = raw_frame.shape[1] // 2
             frame = raw_frame[:, :mid] if self.eye_id == EyeId.LEFT else raw_frame[:, mid:]
@@ -1519,6 +1528,9 @@ class EyeProcessor:
             elif self.eyebrow_runner is not None:
                 self.eyebrow_runner.stop()
                 self.eyebrow_runner = None
+                self._eyebrow_failed_variant = None
+            elif self._eyebrow_failed_variant is not None:
+                self._eyebrow_failed_variant = None
 
             self.current_image_gray = cv2.cvtColor(
                 self.current_image, cv2.COLOR_BGR2GRAY
