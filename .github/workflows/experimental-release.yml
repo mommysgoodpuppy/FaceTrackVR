@@ -90,5 +90,4 @@ jobs:
             "$RUNNER_TEMP/release/SHA256SUMS" \
             --target "$GITHUB_SHA" \
             --title "FaceTrackVR experimental" \
-            --prerelease \
             --notes "Automated experimental build from commit ${GITHUB_SHA}. This release does not include a mouth-tracking model."
