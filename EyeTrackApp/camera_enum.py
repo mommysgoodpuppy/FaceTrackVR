@@ -31,6 +31,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Iterable
 
 import cv2
+from camera_behaviors import collapse_camera_interfaces
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,24 @@ def parse_uvc_named_source(s: str) -> tuple[str, str]:
 
 def format_uvc_named_source(name: str, address: str) -> str:
     return f"{_UVC_PREFIX}{name}@{address}"
+
+
+def label_uvc_cameras(cameras: Iterable[dict]) -> list[tuple[str, dict]]:
+    """Give cameras unique display labels without changing their addresses."""
+    cameras = collapse_camera_interfaces(cameras)
+    totals: dict[str, int] = {}
+    for camera in cameras:
+        name = camera["name"]
+        totals[name] = totals.get(name, 0) + 1
+
+    seen: dict[str, int] = {}
+    labeled = []
+    for camera in cameras:
+        name = camera["name"]
+        seen[name] = seen.get(name, 0) + 1
+        label = name if totals[name] == 1 else f"{name} ({seen[name]})"
+        labeled.append((label, camera))
+    return labeled
 
 
 def _probe_cv2_indices(max_index: int = _MAX_PROBE_INDEX) -> list[int]:

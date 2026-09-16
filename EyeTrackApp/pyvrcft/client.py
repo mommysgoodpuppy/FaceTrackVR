@@ -104,6 +104,16 @@ class VRCFTClient:
         self._threads: list[threading.Thread] = []
         self._send_sock: socket.socket | None = None
         self._recv_sock: socket.socket | None = None
+        # Lightweight timing/signal telemetry used by EyeTrackVR's face debug
+        # view. It observes the real resolved output path, including VRChat's
+        # OSC echo when the avatar config exposes matching output addresses.
+        self._last_tracking_at = None
+        self._tracking_dt_ema = None
+        self._last_send_at = None
+        self._send_dt_ema = None
+        self._last_send_message_count = 0
+        self._sent_at: dict[str, tuple[float, object]] = {}
+        self._echo_latency_ema_ms = None
 
     # ------------------------------------------------------------- public API
 
@@ -125,6 +135,47 @@ class VRCFTClient:
         """Set several UE params at once: ft.set_many({"JawOpen": 0.3, ...})"""
         for name, value in values.items():
             self.set(name, value, v2=v2)
+
+    def send_immediate(self, values: dict, v2: bool = True) -> int:
+        """Encode and transmit changed resolved values on the calling thread.
+
+        This is intentionally narrower than update_tracking(): it bypasses the
+        expression graph and periodic sender, and is used by EyeTrackVR's
+        experimental mouth path after it has already produced compact v2
+        values. The regular send loop observes the same slot state, so it does
+        not duplicate the packet on its next tick.
+        """
+        started = time.monotonic()
+        messages = []
+        with self._lock:
+            force = self.force_relevant
+            for name, value in values.items():
+                key = name if (not v2 or name.startswith(V2_PREFIX)) else V2_PREFIX + name
+                new = key not in self._values
+                self._values[key] = float(value)
+                if new:
+                    self._resolve_one(key)
+                if force:
+                    slot = self._force_slots.get(key)
+                    if slot is None:
+                        slot = self._force_slots[key] = FloatSlot(DEFAULT_PREFIX + key)
+                    slots = (slot,)
+                else:
+                    slots = self._slots.get(key, ())
+                for slot in slots:
+                    wire = slot.update(value)
+                    if wire is not None:
+                        messages.append(osc.encode_message(slot.address, [wire]))
+                        self._sent_at[slot.address] = (started, wire)
+
+        if messages and self._send_sock is not None:
+            try:
+                for bundle in osc.pack_bundles(messages):
+                    self._send_sock.sendto(bundle, (self.send_host, self.send_port))
+                self._record_send(time.monotonic(), len(messages))
+            except OSError:
+                logger.exception("Immediate OSC send failed")
+        return len(messages)
 
     def set_bool(self, name: str, value: bool) -> None:
         """Set a plain bool param sent as-is (e.g. "EyeTrackingActive").
@@ -148,6 +199,15 @@ class VRCFTClient:
         declares reaches the wire, so a v2 avatar, a legacy v1 avatar, and an
         avatar with no FT params at all (native eye tracking) are each driven
         correctly from the same tracking frame."""
+        now = time.monotonic()
+        with self._lock:
+            if self._last_tracking_at is not None:
+                dt = now - self._last_tracking_at
+                self._tracking_dt_ema = (
+                    dt if self._tracking_dt_ema is None
+                    else self._tracking_dt_ema * 0.9 + dt * 0.1
+                )
+            self._last_tracking_at = now
         params, native = compute_outputs(data)
         self.set_many(params)
         # Legacy v1 eye params (bare names, no "v2/" prefix) for older avatars.
@@ -170,6 +230,41 @@ class VRCFTClient:
             if slot is None:
                 slot = self._direct[address] = _DirectSlot(address)
             slot.pending = tuple(values) if len(values) != 1 else values[0]
+
+    def get_diagnostics(self) -> dict:
+        """Snapshot resolved values and timing without affecting transport."""
+        with self._lock:
+            resolved_mouth = {
+                name: value
+                for name, value in self._values.items()
+                if self._slots.get(name) and any(
+                    token in name.lower()
+                    for token in (
+                        "jaw", "mouth", "lip", "tongue", "cheek", "smile",
+                    )
+                )
+            }
+            return {
+                "tracking_hz": (
+                    1.0 / self._tracking_dt_ema if self._tracking_dt_ema else 0.0
+                ),
+                "send_hz": 1.0 / self._send_dt_ema if self._send_dt_ema else 0.0,
+                "send_messages": self._last_send_message_count,
+                "echo_ms": self._echo_latency_ema_ms,
+                "resolved_mouth": resolved_mouth,
+            }
+
+    def _record_send(self, sent_at: float, message_count: int) -> None:
+        """Update transport telemetry for periodic and immediate sends."""
+        with self._lock:
+            if self._last_send_at is not None:
+                dt = sent_at - self._last_send_at
+                self._send_dt_ema = (
+                    dt if self._send_dt_ema is None
+                    else self._send_dt_ema * 0.9 + dt * 0.1
+                )
+            self._last_send_at = sent_at
+            self._last_send_message_count = message_count
 
     def start(self) -> None:
         if self._running:
@@ -321,6 +416,7 @@ class VRCFTClient:
                         wire = slot.update(value)
                         if wire is not None:
                             messages.append(osc.encode_message(slot.address, [wire]))
+                            self._sent_at[slot.address] = (start, wire)
                 for name, value in self._bool_values.items():
                     if force:
                         slot = self._force_slots.get(name)
@@ -345,6 +441,7 @@ class VRCFTClient:
                 try:
                     for bundle in osc.pack_bundles(messages):
                         self._send_sock.sendto(bundle, (self.send_host, self.send_port))
+                    self._record_send(time.monotonic(), len(messages))
                 except OSError:
                     logger.exception("OSC send failed")
 
@@ -363,6 +460,21 @@ class VRCFTClient:
                 self._dispatch(address, args)
 
     def _dispatch(self, address: str, args: list) -> None:
+        if args:
+            with self._lock:
+                sent = self._sent_at.get(address)
+                echoed_matches = False
+                if sent is not None:
+                    try:
+                        echoed_matches = abs(float(args[0]) - float(sent[1])) <= 1e-6
+                    except (TypeError, ValueError):
+                        echoed_matches = args[0] == sent[1]
+                if sent is not None and echoed_matches:
+                    latency = (time.monotonic() - sent[0]) * 1000.0
+                    self._echo_latency_ema_ms = (
+                        latency if self._echo_latency_ema_ms is None
+                        else self._echo_latency_ema_ms * 0.9 + latency * 0.1
+                    )
         if address == "/avatar/change" and args and isinstance(args[0], str):
             self._resolve_avatar(args[0])
         elif address == "/vrcft/settings/forceRelevant" and args and isinstance(args[0], bool):

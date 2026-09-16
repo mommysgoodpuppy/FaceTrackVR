@@ -393,6 +393,10 @@ def compute_outputs(data: UnifiedTrackingData):
         "/tracking/eye/LeftRightPitchYaw": (lp, ly, rp, ry),
         "/tracking/eye/EyesClosedAmount": (1 - combined.openness,),
     }
+    # Optional tracker-owned compact values. EyeTrackVR's improved mouth mode
+    # uses this to bypass VRCFT's second-stage expansion for parameters that
+    # can be derived more directly from native SRanipal outputs.
+    out.update(getattr(data, "_lip_v2_overrides", {}))
     return out, native
 
 

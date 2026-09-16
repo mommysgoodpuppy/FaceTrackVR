@@ -36,6 +36,7 @@ from config import EyeTrackCameraConfig, EyeTrackSettingsConfig
 from enum import Enum
 import sys
 from camera_enum import is_uvc_named_source, parse_uvc_named_source, format_uvc_named_source, resolve_uvc_address_to_index, invalidate_uvc_camera_cache, claim_uvc_address, release_uvc_claim
+from camera_behaviors import stream_controller_for
 from PIL import Image
 from io import BytesIO
 
@@ -148,6 +149,7 @@ class Camera:
         self.cancellation_event = cancellation_event
         self.current_capture_source = config.capture_source
         self.cv2_camera: "cv2.VideoCapture" = None
+        self._uvc_stream_controller = None
         self._file_video_source_cache: tuple[object, bool] | None = None
 
         self.serial_connection = None
@@ -219,6 +221,13 @@ class Camera:
             except Exception:
                 pass
             self.cv2_camera = None
+        controller = self._uvc_stream_controller
+        self._uvc_stream_controller = None
+        if controller is not None:
+            try:
+                controller.disable()
+            except Exception as exc:
+                logger.warning("Camera shutdown control failed: %s", exc)
         if self._claimed_uvc_address is not None:
             release_uvc_claim(id(self))
             self._claimed_uvc_address = None
@@ -401,8 +410,11 @@ class Camera:
                         # doesn't understand the uvc: prefix. Linux keeps the stable
                         # /dev path; Windows/macOS use the resolved integer index.
                         open_source = new_source
+                        camera_name = ""
+                        camera_address = str(new_source)
                         if isinstance(new_source, str) and is_uvc_named_source(new_source):
                             _name, _addr = parse_uvc_named_source(new_source)
+                            camera_name = _name
                             # Skip the (potentially expensive) enumeration until the backoff
                             # expires. This prevents two camera threads from hammering
                             # DirectShow every ~100 ms when the device is absent, which
@@ -426,6 +438,7 @@ class Camera:
                                     return
                                 continue
                             _idx, _resolved_addr = _result
+                            camera_address = _resolved_addr
                             # Claim this address immediately so that sibling camera threads
                             # (same name, different stored address) can exclude it when
                             # doing their own fallback resolution.
@@ -485,6 +498,25 @@ class Camera:
                             and isinstance(open_source, str)
                             and open_source.startswith("/dev/")
                         )
+                        if is_uvc:
+                            controller = stream_controller_for(
+                                camera_name, camera_address
+                            )
+                            if controller is not None:
+                                try:
+                                    controller.enable()
+                                    self._uvc_stream_controller = controller
+                                except Exception as exc:
+                                    logger.warning(
+                                        "Camera-specific initialization failed for %s: %s",
+                                        new_source,
+                                        exc,
+                                    )
+                                    self.camera_status = CameraState.DISCONNECTED
+                                    self._release_cv2_camera()
+                                    if self.cancellation_event.wait(WAIT_TIME):
+                                        return
+                                    continue
                         # https://github.com/opencv/opencv/blob/4.8.0/modules/videoio/include/opencv2/videoio.hpp#L803
                         try:
                             cam.open(open_source, _backend)

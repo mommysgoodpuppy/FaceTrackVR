@@ -420,6 +420,59 @@ class EyeTrackSettingsConfig(BaseModel):
     gui_thresh_add: int = 11
     gui_update_check: bool = True
     gui_ROSC: bool = False
+    # SRanipal lip tracking (Vive Facial Tracker). Self-contained module;
+    # weights are user-supplied (Models/SRanipal_lip.onnx), never distributed.
+    gui_lip_enable: bool = False
+    gui_lip_device: str = ""
+    gui_lip_onnx_path: str = ""
+    # Optional second-stage One-Euro smoothing using the same parameters as
+    # eye tracking. Off preserves byte/numerical SRanipal parity.
+    gui_lip_use_etvr_smoothing: bool = True
+    gui_lip_preview: bool = True
+    gui_lip_debug_visuals: bool = False
+    # Mouth output/postprocess selector: exact VRCFT compatibility, minimally
+    # mapped direct output, or the direct path plus physiology-aware cleanup.
+    gui_lip_output_mode: str = "new_smooth"
+    # Experimental direct SRanipal -> compact v2 mapping. This bypasses the
+    # legacy SRanipal -> Unified -> VRCFT compact expansion for mouth outputs.
+    # Deprecated compatibility field; migrated to gui_lip_output_mode.
+    gui_lip_improved_output: bool = False
+    # One user-facing preset controls the coupled tongue motion constraints.
+    gui_lip_smooth_tongue_stability: str = "balanced"
+    gui_lip_smooth_boost_jaw_open: bool = True
+    # Directional travel available while TongueOut is zero. It rises
+    # continuously to full travel as the tongue protrudes.
+    gui_lip_smooth_tongue_retracted_range: float = 0.35
+    # Global sign-preserving magnitude response, shared by every output mode.
+    gui_lip_response_enable: bool = True
+    gui_lip_response_min: float = 0.0
+    gui_lip_response_max: float = 1.0
+    gui_lip_response_curve: float = 1.0
+    # Optional synthetic second-order motion. It operates on whichever output
+    # graph is selected; disabled or zero mix is an exact output bypass.
+    gui_lip_bounce_enable: bool = True
+    gui_lip_bounce_response_hz: float = 5.0
+    gui_lip_bounce_damping: float = 0.6
+    gui_lip_bounce_mix: float = 10.0
+    # Optional VRCFT Parameter Adjustment mutation.  Each pair is the input
+    # floor/ceiling used by VRCFT's unclamped (value-floor)/(ceiling-floor).
+    gui_lip_vrcft_adjust: bool = False
+    gui_lip_adjust_jaw_open_min: float = 0.0
+    gui_lip_adjust_jaw_open_max: float = 1.0
+    gui_lip_adjust_mouth_closed_min: float = 0.0
+    gui_lip_adjust_mouth_closed_max: float = 1.0
+    gui_lip_adjust_mouth_open_min: float = 0.0
+    gui_lip_adjust_mouth_open_max: float = 1.0
+    gui_lip_adjust_smile_min: float = 0.0
+    gui_lip_adjust_smile_max: float = 1.0
+    gui_lip_adjust_frown_min: float = 0.0
+    gui_lip_adjust_frown_max: float = 1.0
+    gui_lip_adjust_pucker_min: float = 0.0
+    gui_lip_adjust_pucker_max: float = 1.0
+    gui_lip_adjust_funnel_min: float = 0.0
+    gui_lip_adjust_funnel_max: float = 1.0
+    gui_lip_adjust_tongue_out_min: float = 0.0
+    gui_lip_adjust_tongue_out_max: float = 1.0
     gui_circular_crop_right: bool = False
     gui_circular_crop_left: bool = False
     ibo_filter_samples: int = 400
@@ -565,6 +618,8 @@ class EyeTrackSettingsConfig(BaseModel):
             data.setdefault(
                 "leap_lid_widen_threshold_right", data["leap_lid_widen_threshold"]
             )
+        if "gui_lip_output_mode" not in data and data.get("gui_lip_improved_output"):
+            data["gui_lip_output_mode"] = "direct"
         return data
 
 

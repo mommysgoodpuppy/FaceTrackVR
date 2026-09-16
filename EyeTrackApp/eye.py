@@ -35,6 +35,7 @@ class EyeId(IntEnum):
     SETTINGS = 3
     ALGOSETTINGS = 4
     VRCFTMODULESETTINGS = 5
+    LIPSETTINGS = 8
     GUIOFF = 6
     BSB2E = 7
 

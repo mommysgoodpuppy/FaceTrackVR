@@ -45,12 +45,14 @@ from camera_enum import (
     discover_etvr_serial_cameras,
     format_uvc_named_source,
     is_uvc_named_source,
+    label_uvc_cameras,
     list_uvc_cameras,
 )
 from config import EyeTrackConfig
 from eye import EyeId
 from localization import init_localization, tr
 from settings.VRCFTModuleSettings import VRCFTSettingsWidget
+from settings.LipSettings import LipSettingsWidget
 from settings.general_settings_widget import SettingsWidget
 from settings.algo_settings_widget import AlgoSettingsWidget
 from osc.osc import OSCManager
@@ -62,7 +64,7 @@ from utils.version_utils import compare_app_versions
 
 
 
-APP_VERSION = "EyeTrackApp 0.3.0 BETA 9"
+APP_VERSION = "FaceTrackVR 0.3.0 BETA 9"
 setup_logging(APP_VERSION)
 logger = logging.getLogger(__name__)
 winmm = None
@@ -139,7 +141,7 @@ def _check_for_updates_bg(config) -> None:
         if not config.settings.gui_update_check:
             return
         response = requests.get(
-            "https://api.github.com/repos/EyeTrackVR/EyeTrackVR/releases/latest",
+            "https://api.github.com/repos/mommysgoodpuppy/FaceTrackVR/releases/latest",
             timeout=(3, 10),
         )
         response.raise_for_status()
@@ -157,14 +159,14 @@ def _check_for_updates_bg(config) -> None:
                 if is_nt:
                     icon = resource_path("Images/logo.ico")
                     toast = Notification(
-                        app_id="EyeTrackApp",
+                        app_id="FaceTrackVR",
                         title="New Update Available!",
                         msg=f"Please update to {latestversion}",
                         icon=r"{}".format(icon),
                     )
                     toast.add_actions(
                         label="Download Page",
-                        launch="https://github.com/EyeTrackVR/EyeTrackVR/releases/latest",
+                        launch="https://github.com/mommysgoodpuppy/FaceTrackVR/releases/latest",
                     )
                     toast.show()
                 elif sys.platform.startswith("linux"):
@@ -178,9 +180,9 @@ def _check_for_updates_bg(config) -> None:
                     subprocess.Popen(
                         [
                             notify_send,
-                            "--app-name=EyeTrackApp",
+                            "--app-name=FaceTrackVR",
                             f"--icon={resource_path('Images/logo.png')}",
-                            "EyeTrackVR: New Update Available!",
+                            "FaceTrackVR: New Update Available!",
                             f"Please update to {latestversion}",
                         ],
                         stdout=subprocess.DEVNULL,
@@ -261,6 +263,7 @@ def main():
         SettingsWidget(EyeId.SETTINGS, config),
         AlgoSettingsWidget(EyeId.ALGOSETTINGS, config),
         VRCFTSettingsWidget(EyeId.VRCFTMODULESETTINGS, config, osc_queue),
+        LipSettingsWidget(EyeId.LIPSETTINGS, config),
     ]
 
     osc_manager = OSCManager(
@@ -286,6 +289,8 @@ def main():
         for NEXT users."""
         if not isinstance(osc_message.data, bool) or not osc_message.data:
             return
+        if lip_tracker is not None and lip_tracker._thread is not None:
+            lip_tracker.recalibrate()
         use_smartcal = _next_smartcal_selected()
         if config.settings.gui_use_overlay_cal:
             from osc_calibrate_filter import (
@@ -324,6 +329,48 @@ def main():
     )
 
     osc_manager.start()
+    def _lip_shared_frame():
+        """The pyVRCFT sender's shared tracking frame, or None. Resolved
+        lazily: OSCManager rebuilds OSCSender (and the frame) when OSC
+        settings change, so caching the object would go stale."""
+        sender = getattr(osc_manager, "osc_sender", None)
+        if sender is None or not config.settings.gui_pyvrcft:
+            return None
+        return sender.pyvrcft_sender.data
+
+    # SRanipal lip tracking (self-contained; VFT camera + inference + OSC).
+    # Created unconditionally so the settings checkbox works at runtime; the
+    # tracker itself only runs while gui_lip_enable is set.
+    lip_tracker = None
+    try:
+        from lip import LipTracker
+
+        lip_tracker = LipTracker(config.settings)
+        lip_tracker.shared_data_provider = _lip_shared_frame
+        if config.settings.gui_lip_enable and config.settings.gui_lip_device:
+            lip_tracker.start()
+
+        def _on_lip_config_update(data: dict):
+            # Smoothing, preview/debug and VRCFT range mutation are read from
+            # the shared config on every frame and must not cycle the camera's
+            # stream/IR state while the user tunes them.
+            restart_keys = {
+                "gui_lip_enable",
+                "gui_lip_device",
+                "gui_lip_onnx_path",
+                "gui_pyvrcft",
+            }
+            if not restart_keys.intersection(data):
+                return
+            lip_tracker.stop()
+            if config.settings.gui_lip_enable and config.settings.gui_lip_device:
+                if not lip_tracker.start():
+                    logger.warning("Lip tracking restart failed; disabled until next change")
+
+        config.register_listener_callback(_on_lip_config_update)
+    except Exception as e:
+        logger.warning(f"Lip tracking unavailable: {e}")
+        lip_tracker = None
 
     from data_collection import DataCollectionWindow
 
@@ -381,7 +428,9 @@ def main():
             # the actual capture_source string we store/resolve (e.g.
             # ``"OBS Virtual Camera"`` → ``"uvc:OBS Virtual Camera@\\?\..."``).
             # Populated by scan_sources; consulted by _normalize_camera_input.
-            self._source_display_map: dict[str, str] = {}
+            self._source_display_map: dict[str, str] = {
+                tr("tracking.no_source"): ""
+            }
 
             nav = ttk.Frame(self.root)
             nav.pack(fill="x", padx=16, pady=(16, 4))
@@ -391,6 +440,7 @@ def main():
                 ("settings", tr("nav.settings")),
                 ("algo", tr("nav.algo")),
                 ("vrcft", tr("nav.vrcft")),
+                ("lip", tr("nav.lip")),
             ):
                 btn = ttk.Button(
                     nav, text=label, command=lambda p=page_id: self.show_page(p)
@@ -405,6 +455,7 @@ def main():
             self.settings_frame = settings[0].build(self.content)
             self.algo_frame = settings[1].build(self.content, eye_widgets=eyes, dpi_scale=self._dpi_scale)
             self.vrcft_frame = settings[2].build(self.content)
+            self.lip_frame = settings[3].build(self.content)
 
             # "Having Issues?" popup: floats over the current page, same pattern
             # as the Advanced Algo Settings popup.
@@ -522,11 +573,16 @@ def main():
             tracking_controls.pack(fill="x")
             left_initial = config.left_eye.capture_source
             right_initial = config.right_eye.capture_source
+            no_source_label = tr("tracking.no_source")
             self.left_camera_var = tk.StringVar(
-                value="" if left_initial is None or left_initial == "" else str(left_initial)
+                value=no_source_label
+                if left_initial is None or left_initial == ""
+                else str(left_initial)
             )
             self.right_camera_var = tk.StringVar(
-                value="" if right_initial is None or right_initial == "" else str(right_initial)
+                value=no_source_label
+                if right_initial is None or right_initial == ""
+                else str(right_initial)
             )
             self.left_camera_label = ttk.Label(
                 tracking_controls, text=tr("tracking.left_source")
@@ -805,6 +861,7 @@ def main():
                 "settings": settings[0],
                 "algo": settings[1],
                 "vrcft": settings[2],
+                "lip": settings[3],
             }.get(self.current_page)
 
         def _active_settings_reset_config(self):
@@ -859,6 +916,8 @@ def main():
             mapped = self._source_display_map.get(value)
             if mapped is not None:
                 value = mapped
+                if value == "":
+                    return None
             try:
                 return int(value)
             except ValueError:
@@ -914,17 +973,13 @@ def main():
                     mdns_values = results["mdns"] or []
                     serial_pairs = results["serial"] or []
 
-                    name_totals: dict[str, int] = {}
-                    for c in uvc_cams:
-                        name_totals[c["name"]] = name_totals.get(c["name"], 0) + 1
-                    seen: dict[str, int] = {}
-                    source_map: dict[str, str] = {}
+                    no_source_label = tr("tracking.no_source")
+                    source_map: dict[str, str] = {no_source_label: ""}
                     uvc_display_values: list[str] = []
-                    for c in uvc_cams:
-                        n = c["name"]
-                        seen[n] = seen.get(n, 0) + 1
-                        label = n if name_totals[n] == 1 else f"{n} ({seen[n]})"
-                        source_map[label] = format_uvc_named_source(n, c["address"])
+                    for label, camera in label_uvc_cameras(uvc_cams):
+                        source_map[label] = format_uvc_named_source(
+                            camera["name"], camera["address"]
+                        )
                         uvc_display_values.append(label)
 
                     # When UVC scan is still in flight, preserve the previous UVC
@@ -950,7 +1005,7 @@ def main():
 
                     # mDNS → serial → UVC ordering in the dropdown (network
                     # trackers are the primary source; UVC is fallback).
-                    values = [""] + mdns_values + serial_display_values + uvc_display_values
+                    values = [no_source_label] + mdns_values + serial_display_values + uvc_display_values
 
                     self._source_display_map = source_map
                     self.left_camera_entry.configure(values=values)
@@ -1027,7 +1082,9 @@ def main():
             if self.mode_var.get() == "bigscreen":
                 right_source = left_source
                 self.right_camera_var.set(
-                    "" if left_source is None else str(left_source)
+                    tr("tracking.no_source")
+                    if left_source is None
+                    else str(left_source)
                 )
             else:
                 right_source = self._normalize_camera_input(self.right_camera_var.get())
@@ -1110,10 +1167,11 @@ def main():
                 self.settings_frame,
                 self.algo_frame,
                 self.vrcft_frame,
+                self.lip_frame,
             ]:
                 frame.pack_forget()
 
-            if page_name in ("settings", "algo", "vrcft"):
+            if page_name in ("settings", "algo", "vrcft", "lip"):
                 self._settings_actions_row.pack(side="right")
             else:
                 self._settings_actions_row.pack_forget()
@@ -1138,6 +1196,18 @@ def main():
                 self._sync_nav_buttons()
                 self.root.update_idletasks()
                 self.root.after(0, lambda s=seq: self._deferred_enter_vrcft(s))
+            elif page_name == "lip":
+                self.lip_frame.pack(fill="both", expand=True)
+                self._sync_nav_buttons()
+                self.root.update_idletasks()
+                self.root.after(0, lambda s=seq: self._deferred_enter_lip(s))
+
+        def _deferred_enter_lip(self, seq: int) -> None:
+            if seq != self._nav_teardown_seq:
+                return
+            for s in settings[:3]:
+                s.stop()
+            settings[3].start()
 
         def _deferred_enter_tracking(self, seq: int) -> None:
             if seq != self._nav_teardown_seq:
@@ -1145,6 +1215,7 @@ def main():
             settings[0].stop()
             settings[1].stop()
             settings[2].stop()
+            settings[3].stop()
             self.apply_camera_inputs()
             self._sync_timer_resolution()
 
@@ -1160,6 +1231,7 @@ def main():
             self.apply_camera_inputs()
             settings[1].stop()
             settings[2].stop()
+            settings[3].stop()
             settings[0].start()
             self._sync_timer_resolution()
 
@@ -1169,6 +1241,7 @@ def main():
             self.apply_camera_inputs()
             settings[0].stop()
             settings[2].stop()
+            settings[3].stop()
             settings[1].start()
             self._sync_timer_resolution()
 
@@ -1178,6 +1251,8 @@ def main():
             self.apply_camera_inputs()
             settings[0].stop()
             settings[1].stop()
+            settings[2].stop()
+            settings[3].stop()
             settings[2].start()
             self._sync_timer_resolution()
 
@@ -1220,6 +1295,7 @@ def main():
             settings[0].stop()
             settings[1].stop()
             settings[2].stop()
+            settings[3].stop()
             config.save()
             self.root.withdraw()
             dialog = tk.Toplevel()
@@ -1491,6 +1567,8 @@ def main():
                     join_timeout=max(0.0, shutdown_deadline - time.monotonic()),
                     warn_if_alive=False,
                 )
+            if lip_tracker is not None:
+                lip_tracker.stop()
             cancellation_event.set()
             osc_manager.shutdown()
             if getattr(self, "_timer_high_res", False):

@@ -32,6 +32,7 @@ _SECTION_TITLE_KEYS = {
     "BlinkAlgoModule": "settings_base.section_blink",
     "AdvancedTrackingAlgoSettingsModule": "settings_base.section_algo_advanced",
     "VRCFTSettingsModule": "settings_base.section_vrcft",
+    "LipSettingsModule": "lip.section_title",
 }
 
 
@@ -132,7 +133,19 @@ class BaseSettingsWidget:
         self._pending_validated = None
 
     def _schedule_debounced_settings_save(self, validated_data: dict):
-        self._pending_validated = {**(self._pending_validated or {}), **validated_data}
+        next_pending = {**(self._pending_validated or {}), **validated_data}
+        # render_tick polls faster than the disk-save debounce. Until the
+        # config is applied, validation quite correctly reports the same
+        # changes on every poll. Restarting the timer for that identical data
+        # starves it forever, so settings only took effect when leaving the
+        # page forced flush_pending_save(). Only genuinely new edits should
+        # extend the debounce window.
+        if (
+            self._config_save_after_id is not None
+            and next_pending == self._pending_validated
+        ):
+            return
+        self._pending_validated = next_pending
         if self.frame is None:
             return
         top = self.frame.winfo_toplevel()

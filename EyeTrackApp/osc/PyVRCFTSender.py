@@ -18,6 +18,7 @@ output happens on the port's own timer (~100 Hz), decoupled from tracking rate.
 """
 
 import logging
+import threading
 
 from eye import EyeId
 from osc.OSCMessage import OSCMessage
@@ -46,6 +47,10 @@ class PyVRCFTSender:
     def __init__(self):
         self.client: VRCFTClient | None = None
         self.data = UnifiedTrackingData()
+        self._tracking_lock = threading.RLock()
+        # Auxiliary producers (notably the VFT lip tracker) use the same lock
+        # so one VRCFT output snapshot cannot contain half of two lip frames.
+        self.data._tracking_lock = self._tracking_lock
         # Advertise eye tracking as active so VRCFT-style avatars enable it.
         self.data.eye_tracking_active = True
         self.is_single_eye = False
@@ -72,6 +77,8 @@ class PyVRCFTSender:
             send_port=int(config.gui_osc_port),
             recv_port=recv_port,
         )
+        self.data._vrcft_client = self.client
+        self.data._lip_immediate_sender = self.client.send_immediate
         # Map normalized calibrated gaze (±1) to true FOV angles on the native
         # /tracking/eye/LeftRightPitchYaw endpoint, so full gaze reflects the
         # real headset/calibration FOV instead of VRCFT's default 45°. Mirrors
@@ -93,6 +100,8 @@ class PyVRCFTSender:
         if self.client is not None:
             self.client.stop()
             self.client = None
+            self.data._vrcft_client = None
+            self.data._lip_immediate_sender = None
             logger.info("pyVRCFT sender stopped")
 
     @staticmethod
@@ -107,6 +116,10 @@ class PyVRCFTSender:
     def output_osc_info(self, osc_message: OSCMessage, main_config, config):
         if self.client is None:
             return
+        with self._tracking_lock:
+            self._output_osc_info_locked(osc_message, main_config, config)
+
+    def _output_osc_info_locked(self, osc_message, main_config, config):
         eye_id, eye_info = osc_message.data
         self.is_single_eye = VRChatOSCSender.get_is_single_eye(
             main_config.eye_display_id
@@ -118,22 +131,28 @@ class PyVRCFTSender:
             1.0 - eye_info.blink if config.osc_invert_eye_close else eye_info.blink
         )
         squeeze = float(eye_info.squeeze)
+        lip_owns_cheeks = bool(
+            getattr(self.data, "_lip_owns_cheek_squint", False)
+        )
 
         if self.is_single_eye:
             self._apply_eye(self.data.eye.left, eye_info, openness)
             self._apply_eye(self.data.eye.right, eye_info, openness)
             self.data.shapes["EyeSquintLeft"] = squeeze
             self.data.shapes["EyeSquintRight"] = squeeze
-            self.data.shapes["CheekSquintLeft"] = squeeze
-            self.data.shapes["CheekSquintRight"] = squeeze
+            if not lip_owns_cheeks:
+                self.data.shapes["CheekSquintLeft"] = squeeze
+                self.data.shapes["CheekSquintRight"] = squeeze
         elif eye_id == EyeId.LEFT:
             self._apply_eye(self.data.eye.left, eye_info, openness)
             self.data.shapes["EyeSquintLeft"] = squeeze
-            self.data.shapes["CheekSquintLeft"] = squeeze
+            if not lip_owns_cheeks:
+                self.data.shapes["CheekSquintLeft"] = squeeze
         elif eye_id == EyeId.RIGHT:
             self._apply_eye(self.data.eye.right, eye_info, openness)
             self.data.shapes["EyeSquintRight"] = squeeze
-            self.data.shapes["CheekSquintRight"] = squeeze
+            if not lip_owns_cheeks:
+                self.data.shapes["CheekSquintRight"] = squeeze
 
         for name, value in getattr(eye_info, "auxiliary_expressions", {}).items():
             if name in UNIFIED_EXPRESSION_SET and name not in NEXT_OWNED_SHAPES:
@@ -154,6 +173,10 @@ class PyVRCFTSender:
     def output_eyebrow_info(self, eye_id, brow_val: float, main_config):
         if self.client is None:
             return
+        with self._tracking_lock:
+            self._output_eyebrow_info_locked(eye_id, brow_val, main_config)
+
+    def _output_eyebrow_info_locked(self, eye_id, brow_val, main_config):
         is_single = VRChatOSCSender.get_is_single_eye(main_config.eye_display_id)
         brow_val = float(brow_val)
         # The other modes drive v2/BrowExpression directly. Here we set the
