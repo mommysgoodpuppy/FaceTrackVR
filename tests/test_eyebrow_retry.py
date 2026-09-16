@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from eye_processor import EyeProcessor
+from eyebrow import EyeBrow
 
 
 def _processor(variant="BSB"):
@@ -45,3 +46,30 @@ def test_changing_variant_allows_one_new_initialization_attempt(monkeypatch):
 
     assert attempts == ["BSB", "ETVR"]
     assert processor._eyebrow_failed_variant == "ETVR"
+
+
+def test_missing_variant_model_falls_back_to_bundled_etvr_model(monkeypatch):
+    loaded = []
+
+    class Session:
+        def __init__(self, path, *_args, **_kwargs):
+            loaded.append(path)
+
+        def get_inputs(self):
+            return [SimpleNamespace(name="input")]
+
+    monkeypatch.setattr(
+        "eyebrow.resource_path", lambda path: f"/bundle/{path}"
+    )
+    monkeypatch.setattr(
+        "eyebrow.os.path.isfile",
+        lambda path: path.endswith("Eyebrow_ETVR.onnx"),
+    )
+    monkeypatch.setattr("eyebrow.onnxruntime.InferenceSession", Session)
+
+    runner = EyeBrow("BSB")
+    try:
+        assert loaded == ["/bundle/Models/Eyebrow_ETVR.onnx"]
+        assert runner.variant == "BSB"
+    finally:
+        runner.stop()

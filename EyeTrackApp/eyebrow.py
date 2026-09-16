@@ -112,7 +112,16 @@ class EyeBrow:
 
     def __init__(self, variant: str = DEFAULT_MODEL_VARIANT):
         self.variant = variant
-        model_path = resource_path(model_file_for_variant(variant))
+        model_file = model_file_for_variant(variant)
+        model_path = resource_path(model_file)
+        if not os.path.isfile(model_path) and model_file != "Models/Eyebrow_ETVR.onnx":
+            fallback = resource_path("Models/Eyebrow_ETVR.onnx")
+            logger.warning(
+                "EyeBrow model %s is unavailable; using %s",
+                model_path,
+                fallback,
+            )
+            model_path = fallback
         logger.info("EyeBrow: loading %s (CPU)", model_path)
         onnxruntime.disable_telemetry_events()
         opts = onnxruntime.SessionOptions()
