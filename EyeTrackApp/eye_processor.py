@@ -1429,6 +1429,23 @@ class EyeProcessor:
             data=(self.eye_id, self.eyebrow_runner.get_result()),
         ))
 
+    def _update_standalone_eyebrow(self, raw_frame: np.ndarray) -> None:
+        """Run the optional eyebrow model only when the tracker lacks one.
+
+        NEXT already emits a trained eyebrow value. Allowing the standalone
+        model to run alongside it makes two asynchronous producers alternate
+        writes to the same BrowExpression parameters, which appears as rapid
+        eyebrow flicker in VRChat.
+        """
+        if self.settings.gui_eyebrow and not self._next_active:
+            self._run_eyebrow(raw_frame)
+        elif self.eyebrow_runner is not None:
+            self.eyebrow_runner.stop()
+            self.eyebrow_runner = None
+            self._eyebrow_failed_variant = None
+        elif self._eyebrow_failed_variant is not None:
+            self._eyebrow_failed_variant = None
+
     def run(self):
         # Reset HSF runner on each thread start so a fresh runner is built from
         # current settings rather than inheriting stale state from a prior run.
@@ -1523,14 +1540,7 @@ class EyeProcessor:
             elif not self.capture_crop_rotate_image():
                 continue
 
-            if self.settings.gui_eyebrow:
-                self._run_eyebrow(raw_frame)
-            elif self.eyebrow_runner is not None:
-                self.eyebrow_runner.stop()
-                self.eyebrow_runner = None
-                self._eyebrow_failed_variant = None
-            elif self._eyebrow_failed_variant is not None:
-                self._eyebrow_failed_variant = None
+            self._update_standalone_eyebrow(raw_frame)
 
             self.current_image_gray = cv2.cvtColor(
                 self.current_image, cv2.COLOR_BGR2GRAY
