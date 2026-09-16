@@ -1,0 +1,94 @@
+name: Experimental rolling release
+
+on:
+  push:
+    branches:
+      - experimental
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: experimental-release
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Build Linux x86_64
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            build-essential cmake ninja-build libeigen3-dev \
+            binutils file rsync libgl1 libglib2.0-0 \
+            libsm6 libice6 libtbb12
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.14"
+          enable-cache: true
+
+      - name: Choose build version
+        id: version
+        shell: bash
+        run: |
+          short_sha="${GITHUB_SHA::7}"
+          version="experimental-${short_sha}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "safe_version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Build portable application
+        env:
+          FTVR_BUILD_ROOT: ${{ runner.temp }}/facetrackvr-build
+        run: |
+          bash scripts/build_linux.sh \
+            "${{ steps.version.outputs.version }}" \
+            "${{ steps.version.outputs.safe_version }}" \
+            "$GITHUB_WORKSPACE" \
+            "$RUNNER_TEMP/release"
+
+      - name: Run focused tests
+        env:
+          FTVR_BUILD_ROOT: ${{ runner.temp }}/facetrackvr-build
+          PYTHONPATH: EyeTrackApp
+        run: |
+          uv pip install --python "$FTVR_BUILD_ROOT/venv/bin/python" pytest
+          "$FTVR_BUILD_ROOT/venv/bin/python" -m pytest \
+            tests/test_lip_sranipal_parity.py \
+            tests/test_ellseg_pupil.py \
+            tests/test_eyebrow_retry.py \
+            tests/test_settings_debounce.py \
+            tests/test_version_utils.py
+
+      - name: Create checksum
+        working-directory: ${{ runner.temp }}/release
+        run: sha256sum FaceTrackVR-*.tar.gz > SHA256SUMS
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: FaceTrackVR-${{ steps.version.outputs.safe_version }}-linux-x86_64
+          path: |
+            ${{ runner.temp }}/release/FaceTrackVR-*.tar.gz
+            ${{ runner.temp }}/release/SHA256SUMS
+          if-no-files-found: error
+
+      - name: Replace rolling prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete experimental --cleanup-tag --yes || true
+          gh release create experimental \
+            "$RUNNER_TEMP"/release/FaceTrackVR-*.tar.gz \
+            "$RUNNER_TEMP/release/SHA256SUMS" \
+            --target "$GITHUB_SHA" \
+            --title "FaceTrackVR experimental" \
+            --prerelease \
+            --notes "Automated experimental build from commit ${GITHUB_SHA}. This release does not include a mouth-tracking model."

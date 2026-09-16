@@ -1,73 +1,84 @@
-![GitHub Logo](https://i.imgur.com/DNW11Yt.png)
-Picture courtesy of Wackalope#6737
+# FaceTrackVR
 
-[![GitHub issues](https://img.shields.io/github/issues/RedHawk989/EyeTrackVR?style=plastic)](https://github.com/RedHawk989/EyeTrackVR/issues) [![GitHub forks](https://img.shields.io/github/forks/RedHawk989/EyeTrackVR?style=plastic)](https://github.com/RedHawk989/EyeTrackVR/network) [![GitHub stars](https://img.shields.io/github/stars/RedHawk989/EyeTrackVR?style=plastic)](https://github.com/RedHawk989/EyeTrackVR/stargazers)
+FaceTrackVR (FTVR) is a practical fork of
+[EyeTrackVR](https://github.com/EyeTrackVR/EyeTrackVR) for running eye and
+mouth tracking together in one application.
 
-- [EyeTrackVR](#eyetrackvr)
-      - [This project is in development and is not fully finished](#this-project-is-in-development-and-is-not-fully-finished)
-  - [Hardware](#hardware)
-  - [About IR Emitter Safety](#about-ir-emitter-safety)
-        - [Make sure you are using NON-focused emitters and at around 5ma total power](#make-sure-you-are-using-non-focused-emmiters-and-at-around-5ma-total-power)
-  - [Firmware](#firmware)
-  - [Headset support](#headset-support)
-      - [Contact](#contact)
-- [Licenses](#licenses)
+Compared with upstream EyeTrackVR, this fork currently adds:
 
-# EyeTrackVR
+- pupil-dilation tracking with EllSeg
+- mouth tracking with custom and VRCFT-style post-processing
+- a portable SRanipal-like runtime implementation for the Vive Facial Tracker
 
-Source First and *affordable* VR eye tracker platform for [VRChat](https://hello.vrchat.com/) via `OSC` and `UDP` protocol.
+The initial target setup is:
 
-> [!IMPORTANT]\
-> This project is in active development and is not fully finished
+- Bigscreen Beyond 2e eye cameras
+- Vive Facial Tracker mouth camera
+- VRChat output through the integrated VRCFT-compatible sender
 
-## Documentation
-Please check out our [documentation site](https://docs.eyetrackvr.dev)
+FTVR is currently experimental and primarily developed to make this hardware
+combination usable today. Changes are kept suitable for upstreaming where
+possible.
 
-## Hardware
+## Current status
 
-3d files for mounting brackets will be found [here](https://github.com/EyeTrackVR/EyeTrackVR-Hardware)
-IR emitter files are also located there. For more info please reference our parts list on our [documentation site](https://docs.eyetrackvr.dev/how_to_build/part_list)
+Eye tracking and the existing EyeTrackVR features remain available. The fork
+adds an in-progress Linux Vive Facial Tracker capture path, mouth inference,
+the compatible stateful postprocessor, and integrated face-expression output.
 
-## ESP32 Firmware
+The direct Vive Facial Tracker camera backend is currently Linux-only. Other
+EyeTrackVR functionality remains cross-platform to the same extent as the
+upstream project.
 
-Current work has been with our official firmware by `lorow`, found [here](https://github.com/EyeTrackVR/OpenIris).
+## Experimental builds
 
-## Headset support
+Every commit on the `experimental` branch produces a rolling Linux x86_64
+prerelease. The existing `experimental` release is replaced after a successful
+build and focused test run, so its download always represents the newest
+working commit.
 
-Any headset that can fit the camera and LEDs can likely be supported, however, mounts may not have been made for it. Please reference to our [parts list](https://docs.eyetrackvr.dev/how_to_build/part_list) for details.
+These builds are intentionally prereleases. Check `SHA256SUMS` before running
+the downloaded archive, and expect settings or behavior to change between
+commits.
 
+## Mouth model
 
-## About IR Emitter Safety
+FTVR does not include a mouth-tracking model. Select a compatible ONNX file in
+the Mouth settings. One can be produced with [lip-tvm2onnx](https://github.com/mommysgoodpuppy/lip-tvm2onnx).
 
-Please *exercise extreme caution* when messing around with IR emitters.
-<ins>Once safety testing has been completed links and files will be provided for the emitters</ins>. Please make sure you know what you are doing when assembling the IR emitters.
- <ins>**DO NOT BYPASS (OR NOT DO) ANY SAFETY FEATURES PUT IN PLACE**</ins>. This can result in irreversible bodily harm.
-The safety measures were put in place to REDUCE the potential failure risk. All further safety responsibilities are on the user.
-This includes visually checking with an IR camera that the brightness is correct and making sure you do not feel warmth.
+## Development
 
-> [!WARNING]\
-> Make sure you are using **NON-focused** emitters and at around ***5ma total power per eye***.
+On Linux, install a source-backed development launcher with:
 
-[Effect of infrared radiation on the lens](https://docs.eyetrackvr.dev/safety/effect_of_ir_on_the_lens.pdf)
+```bash
+bash scripts/linux/install_source.sh
+```
 
-[Training-library Nir Stds](https://docs.eyetrackvr.dev/safety/training-library_nir_stds_20021011.pdf)
+This creates a project-local uv environment and makes both the application-menu
+entry and `facetrackvr` command run the current checkout directly. Source edits
+therefore take effect on the next launch without rebuilding a release archive.
 
-[AN002_Details on photobiological safety of LED light sources](https://docs.eyetrackvr.dev/safety/AN002_Details_on_photobiological_safety_of_LED_light_sources.pdf)
+The inherited Poetry project metadata remains available in
+[`pyproject.toml`](pyproject.toml).
 
-## Contact
+The implementation plan is maintained separately while the initial fork is
+being assembled. Setup and release instructions will be added before the first
+usable release.
 
-Please join our Discord for updates and any questions.
+## Safety
 
-[![Discord](https://img.shields.io/badge/Discord-7289DA?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/kkXYbVykZX)
+EyeTrackVR supports custom infrared eye-tracking hardware. Infrared emitters
+can cause irreversible eye injury when improperly designed or driven. Do not
+bypass hardware safety measures, and do not use focused or unverified emitters.
 
-## Licenses
+## Origin and license
 
-***All software is licensed under the Babble Software Distribution License 1.0 unless marked otherwise.***
+FaceTrackVR is a modified fork of EyeTrackVR. The upstream project and its
+contributors remain credited in the source history and copyright notices.
 
-All documentation, is under the Creative Commons CC-BY-SA-4.0 license***.
-
-<!-- <div align="center">
-<img src="./docs/assets/images/licenses/licenses.svg" width="300" alt="Open Licenses" />
-</div> -->
-
-[Top](#eyetrackvr)
+Software is distributed under the included
+[Babble Software Distribution License 1.0](LICENSE). Documentation inherited
+from EyeTrackVR retains its applicable license. Third-party components retain
+their own licenses and notices. The bundled EllSeg model is distributed under
+the MIT license; its copyright and license text are included in
+[`EyeTrackApp/Models/EllSeg_LICENSE.md`](EyeTrackApp/Models/EllSeg_LICENSE.md).

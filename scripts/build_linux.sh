@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Build the EyeTrackVR Linux release artifact inside WSL (or any Ubuntu 22.04+).
+# Build the FaceTrackVR Linux release artifact on Ubuntu 24.04 or newer.
 #
 #   bash build_linux.sh <version> <file-safe-version> <repo-root-in-wsl> <out-dir-in-wsl>
 #   e.g. bash build_linux.sh "0.3.0 BETA 7" "0.3.0-BETA-7" \
-#            /mnt/c/Users/beaul/Documents/GitHub/EyeTrackVR /mnt/c/.../release
+#            /path/to/FaceTrackVR /path/to/release
 #
-# Produces: <out-dir>/EyeTrackVR-<file-safe-version>-linux-x86_64.tar.gz
+# Produces: <out-dir>/FaceTrackVR-<file-safe-version>-linux-x86_64.tar.gz
 #
 # Strategy: rsync the sources to the native ext4 filesystem first (PyInstaller
 # on /mnt/c is 10-20x slower and can hit permission quirks), then venv + build.
@@ -16,11 +16,10 @@ SAFE_VERSION="${2:?file-safe version required}"
 REPO_ROOT="${3:?repo root (WSL path) required}"
 OUT_DIR="${4:?output dir (WSL path) required}"
 
-export PATH="$HOME/.local/bin:/root/.local/bin:$PATH"
-BUILD_ROOT="$HOME/etvr-build"
+BUILD_ROOT="${FTVR_BUILD_ROOT:-${RUNNER_TEMP:-/tmp}/facetrackvr-build}"
 SRC_DIR="$BUILD_ROOT/src"
 VENV_DIR="$BUILD_ROOT/venv"
-APP_SUBDIR="eyetrackapp"
+APP_SUBDIR="EyeTrackApp"
 
 echo "[linux-build] syncing sources to native filesystem..."
 mkdir -p "$SRC_DIR"
@@ -56,8 +55,8 @@ PY_LIBDIR="$(python -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR
 LD_LIBRARY_PATH="${PY_LIBDIR}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
     pyinstaller eyetrackapp_linux.spec --noconfirm
 
-BUNDLE="dist/EyeTrackVR"
-test -x "$BUNDLE/eyetrackvr" || { echo "ERROR: bundle missing eyetrackvr binary"; exit 1; }
+BUNDLE="dist/FaceTrackVR"
+test -x "$BUNDLE/facetrackvr" || { echo "ERROR: bundle missing facetrackvr binary"; exit 1; }
 
 echo "[linux-build] smoke test: bundled binary starts and imports..."
 # Run WITHOUT the build env's LD_LIBRARY_PATH, exactly like an end-user machine.
@@ -68,7 +67,7 @@ echo "[linux-build] smoke test: bundled binary starts and imports..."
 #   "no display" in output: headless box; still proves libs link and unpack
 # Anything else (missing .so, ImportError, instant crash) fails the build.
 set +e
-SMOKE_OUT="$(timeout 20 env -u LD_LIBRARY_PATH "$BUNDLE/eyetrackvr" 2>&1)"
+SMOKE_OUT="$(timeout 20 env -u LD_LIBRARY_PATH "$BUNDLE/facetrackvr" 2>&1)"
 SMOKE_RC=$?
 set -e
 if [ $SMOKE_RC -eq 0 ] || [ $SMOKE_RC -eq 124 ] \
@@ -79,18 +78,23 @@ else
     echo "$SMOKE_OUT" | tail -20
     exit 1
 fi
+# The smoke run creates runtime logs next to the executable. They describe the
+# CI host and are not part of the application payload.
+rm -rf "$BUNDLE/logs"
 
 echo "[linux-build] assembling tarball..."
-STAGE="$BUILD_ROOT/stage/EyeTrackVR-$SAFE_VERSION"
+STAGE="$BUILD_ROOT/stage/FaceTrackVR-$SAFE_VERSION"
 rm -rf "$BUILD_ROOT/stage"
 mkdir -p "$STAGE"
 cp -a "$BUNDLE/." "$STAGE/"
 install -m 0755 "$SRC_DIR/scripts/linux/install.sh" "$STAGE/install.sh"
-install -m 0644 "$SRC_DIR/scripts/linux/EyeTrackVR.desktop" "$STAGE/EyeTrackVR.desktop"
+install -m 0644 "$SRC_DIR/scripts/linux/FaceTrackVR.desktop" "$STAGE/FaceTrackVR.desktop"
+install -m 0644 "$REPO_ROOT/LICENSE" "$STAGE/LICENSE"
+install -m 0644 "$REPO_ROOT/README.md" "$STAGE/README.md"
 echo "$VERSION" > "$STAGE/VERSION"
 
 mkdir -p "$OUT_DIR"
-TARBALL="$OUT_DIR/EyeTrackVR-$SAFE_VERSION-linux-x86_64.tar.gz"
-tar -C "$BUILD_ROOT/stage" -czf "$TARBALL" "EyeTrackVR-$SAFE_VERSION"
+TARBALL="$OUT_DIR/FaceTrackVR-$SAFE_VERSION-linux-x86_64.tar.gz"
+tar -C "$BUILD_ROOT/stage" -czf "$TARBALL" "FaceTrackVR-$SAFE_VERSION"
 echo "[linux-build] wrote $TARBALL"
 echo "LINUX_BUILD_DONE"

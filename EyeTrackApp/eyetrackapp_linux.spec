@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# Linux build of EyeTrackVR. Differences from the Windows spec (eyetrackapp.spec):
+# Linux build of FaceTrackVR. Differences from the Windows spec (eyetrackapp.spec):
 #   - onedir (COLLECT) instead of onefile: faster startup, standard for tarballs
 #   - openvr ships libopenvr_api*.so on Linux, discovered by glob
 #   - Windows-only packages (pywinstyles/pygrabber/winotify/winsound) excluded
@@ -54,7 +54,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="eyetrackvr",
+    name="facetrackvr",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -74,5 +74,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="EyeTrackVR",
+    name="FaceTrackVR",
 )

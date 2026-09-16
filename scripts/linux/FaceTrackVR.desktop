@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=FaceTrackVR
+Comment=Integrated eye and face tracking for VRChat
+Exec=INSTALL_DIR/facetrackvr
+Icon=INSTALL_DIR/_internal/Images/logo.png
+Terminal=false
+Categories=Utility;Game;
+StartupWMClass=facetrackvr
