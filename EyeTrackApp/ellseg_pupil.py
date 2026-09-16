@@ -75,7 +75,12 @@ class _EllSegRuntime:
             self._high_rate,
         )
         onnxruntime.disable_telemetry_events()
-        if self._use_gpu and self._high_rate:
+        # EllSeg is unusually expensive on CPU even at the normal one-update-
+        # per-eye cadence (~460 ms of CPU per pass on a 5800X3D).  WebGPU cuts
+        # that to a small asynchronous Vulkan dispatch and reproduces the same
+        # fitted geometry on BSB input.  Use it whenever GPU inference is
+        # requested; high_rate controls cadence/threading, not provider choice.
+        if self._use_gpu:
             webgpu_session = _create_webgpu_session(model_path)
             if webgpu_session is not None:
                 return webgpu_session

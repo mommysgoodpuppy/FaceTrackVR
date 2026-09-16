@@ -3,6 +3,7 @@ import numpy as np
 import onnxruntime
 
 from ellseg_pupil import (
+    _EllSegRuntime,
     _FrameTransform,
     _measurement_from_logits,
     _preprocess,
@@ -63,3 +64,39 @@ def test_ellseg_onnx_artifact_loads_and_has_expected_contract():
     )[0]
 
     assert output.shape == (1, 3, 240, 320)
+
+
+def _unstarted_runtime(*, use_gpu, high_rate=False):
+    runtime = object.__new__(_EllSegRuntime)
+    runtime._use_gpu = use_gpu
+    runtime._high_rate = high_rate
+    runtime._uses_directml = False
+    return runtime
+
+
+def test_normal_rate_uses_webgpu_when_gpu_is_requested(monkeypatch):
+    expected = object()
+    monkeypatch.setattr("ellseg_pupil._create_webgpu_session", lambda _path: expected)
+    monkeypatch.setattr(
+        "ellseg_pupil.create_inference_session",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("CPU fallback should not be created")
+        ),
+    )
+
+    runtime = _unstarted_runtime(use_gpu=True, high_rate=False)
+
+    assert runtime._create_session() is expected
+
+
+def test_normal_rate_falls_back_when_webgpu_is_unavailable(monkeypatch):
+    expected = object()
+    monkeypatch.setattr("ellseg_pupil._create_webgpu_session", lambda _path: None)
+    monkeypatch.setattr(
+        "ellseg_pupil.create_inference_session",
+        lambda *_args, **_kwargs: (expected, False),
+    )
+
+    runtime = _unstarted_runtime(use_gpu=True, high_rate=False)
+
+    assert runtime._create_session() is expected
