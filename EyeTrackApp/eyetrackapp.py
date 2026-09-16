@@ -141,7 +141,7 @@ def _check_for_updates_bg(config) -> None:
         if not config.settings.gui_update_check:
             return
         response = requests.get(
-            "https://api.github.com/repos/mommysgoodpuppy/FaceTrackVR/releases/latest",
+            "https://api.github.com/repos/mommysgoodpuppy/FaceTrackVR/releases/tags/experimental",
             timeout=(3, 10),
         )
         response.raise_for_status()
