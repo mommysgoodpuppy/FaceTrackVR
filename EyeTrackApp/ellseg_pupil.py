@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import queue
 import threading
 from concurrent.futures import Future
@@ -50,6 +51,7 @@ class _EllSegRuntime:
         self._use_gpu = bool(use_gpu)
         self._high_rate = bool(high_rate)
         self._uses_directml = False
+        self._uses_cpu = False
         self._jobs: queue.Queue = queue.Queue(maxsize=2)
         self._thread = threading.Thread(
             target=self._worker,
@@ -78,26 +80,60 @@ class _EllSegRuntime:
         # EllSeg is unusually expensive on CPU even at the normal one-update-
         # per-eye cadence (~460 ms of CPU per pass on a 5800X3D).  WebGPU cuts
         # that to a small asynchronous Vulkan dispatch and reproduces the same
-        # fitted geometry on BSB input.  Use it whenever GPU inference is
-        # requested; high_rate controls cadence/threading, not provider choice.
-        if self._use_gpu:
+        # fitted geometry on BSB input. Reserve it for the explicit high-rate
+        # diagnostic: even a low-cadence dispatch can interrupt VR rendering.
+        force_cpu = os.environ.get("ELLSEG_FORCE_CPU", "").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        force_webgpu = os.environ.get("ELLSEG_FORCE_WEBGPU", "").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        # A full NCHW EllSeg dispatch takes about 21 ms on the RX 7900 XTX,
+        # causing one missed 75 Hz SteamVR frame at each normal 1 Hz update.
+        # Keep normal pupil tracking on the isolated low-priority CPU worker.
+        # The opt-in high-rate diagnostic remains on WebGPU, and the explicit
+        # override is retained for profiling future runtimes/model variants.
+        use_webgpu = self._use_gpu and not force_cpu and (
+            self._high_rate or force_webgpu
+        )
+        if use_webgpu:
             webgpu_session = _create_webgpu_session(model_path)
             if webgpu_session is not None:
                 return webgpu_session
 
         options = onnxruntime.SessionOptions()
         options.inter_op_num_threads = 1
-        options.intra_op_num_threads = 0 if self._high_rate else 1
+        cpu_threads = max(1, int(os.environ.get("ELLSEG_CPU_THREADS", "1")))
+        options.intra_op_num_threads = 0 if self._high_rate else cpu_threads
         options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
         options.enable_mem_pattern = False
         session, self._uses_directml = create_inference_session(
             model_path,
             options,
-            use_gpu=self._use_gpu,
+            use_gpu=False,
             component="EllSeg pupil",
             logger=logger,
         )
+        providers = getattr(session, "get_providers", lambda: [])()
+        self._uses_cpu = "CPUExecutionProvider" in providers
         return session
+
+    def _configure_cpu_worker(self):
+        """Keep low-rate CPU inference away from latency-critical VR work."""
+        if not self._uses_cpu or self._high_rate:
+            return
+        try:
+            tid = threading.get_native_id()
+            allowed_cpus = os.sched_getaffinity(tid)
+            if allowed_cpus:
+                os.sched_setaffinity(tid, {max(allowed_cpus)})
+            os.setpriority(os.PRIO_PROCESS, tid, 19)
+        except (AttributeError, OSError):
+            logger.debug("Could not lower EllSeg CPU worker priority", exc_info=True)
 
     def _worker(self):
         session = None
@@ -109,6 +145,7 @@ class _EllSegRuntime:
             try:
                 if session is None:
                     session = self._create_session()
+                    self._configure_cpu_worker()
                     input_name = session.get_inputs()[0].name
                 tensor, transform = _preprocess(frame, gamma=gamma)
                 if self._uses_directml:

@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import onnxruntime
+from unittest import mock
 
 from ellseg_pupil import (
     _EllSegRuntime,
@@ -74,19 +75,62 @@ def _unstarted_runtime(*, use_gpu, high_rate=False):
     return runtime
 
 
-def test_normal_rate_uses_webgpu_when_gpu_is_requested(monkeypatch):
-    expected = object()
-    monkeypatch.setattr("ellseg_pupil._create_webgpu_session", lambda _path: expected)
+def test_normal_rate_uses_cpu_when_gpu_is_requested(monkeypatch):
+    expected = mock.Mock()
+    expected.get_providers.return_value = ["CPUExecutionProvider"]
+    monkeypatch.setattr(
+        "ellseg_pupil._create_webgpu_session",
+        lambda _path: (_ for _ in ()).throw(
+            AssertionError("normal-rate tracking should not use WebGPU")
+        ),
+    )
     monkeypatch.setattr(
         "ellseg_pupil.create_inference_session",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("CPU fallback should not be created")
-        ),
+        lambda *_args, **_kwargs: (expected, False),
     )
 
     runtime = _unstarted_runtime(use_gpu=True, high_rate=False)
 
     assert runtime._create_session() is expected
+    assert runtime._uses_cpu is True
+
+
+def test_high_rate_uses_webgpu_when_gpu_is_requested(monkeypatch):
+    expected = object()
+    monkeypatch.setattr("ellseg_pupil._create_webgpu_session", lambda _path: expected)
+    runtime = _unstarted_runtime(use_gpu=True, high_rate=True)
+
+    assert runtime._create_session() is expected
+
+
+def test_force_webgpu_allows_normal_rate_profiling(monkeypatch):
+    expected = object()
+    monkeypatch.setenv("ELLSEG_FORCE_WEBGPU", "1")
+    monkeypatch.setattr("ellseg_pupil._create_webgpu_session", lambda _path: expected)
+    runtime = _unstarted_runtime(use_gpu=True, high_rate=False)
+
+    assert runtime._create_session() is expected
+
+
+def test_force_cpu_skips_webgpu(monkeypatch):
+    expected = mock.Mock()
+    expected.get_providers.return_value = ["CPUExecutionProvider"]
+    monkeypatch.setenv("ELLSEG_FORCE_CPU", "1")
+    monkeypatch.setattr(
+        "ellseg_pupil._create_webgpu_session",
+        lambda _path: (_ for _ in ()).throw(
+            AssertionError("WebGPU should be skipped when CPU is forced")
+        ),
+    )
+    monkeypatch.setattr(
+        "ellseg_pupil.create_inference_session",
+        lambda *_args, **_kwargs: (expected, False),
+    )
+
+    runtime = _unstarted_runtime(use_gpu=True, high_rate=False)
+
+    assert runtime._create_session() is expected
+    assert runtime._uses_cpu is True
 
 
 def test_normal_rate_falls_back_when_webgpu_is_unavailable(monkeypatch):
