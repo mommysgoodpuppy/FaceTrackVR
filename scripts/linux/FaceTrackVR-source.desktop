@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=FaceTrackVR (Source)
+Comment=Run FaceTrackVR directly from the development checkout
+Exec=REPO_DIR/scripts/linux/run_source.sh
+Icon=REPO_DIR/EyeTrackApp/Images/logo.png
+Terminal=false
+Categories=Utility;Game;
+StartupWMClass=facetrackvr
