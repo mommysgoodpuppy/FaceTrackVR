@@ -368,6 +368,24 @@ def test_mouth_model_accepts_generic_bgr_camera_frames():
     assert tracker.session.x.shape == (1, 2, 100, 100)
 
 
+def test_mouth_model_duplicates_non_stereo_camera_frames():
+    class Session:
+        def __init__(self):
+            self.x = None
+
+        def run(self, _outputs, feeds):
+            self.x = feeds["input"]
+            return [np.zeros((1, 30), dtype=np.float32)]
+
+    tracker = LipTracker(SimpleNamespace(gui_lip_preview=False))
+    tracker.session = Session()
+    mono = np.arange(480 * 640, dtype=np.uint8).reshape(480, 640)
+    tracker._infer(np.repeat(mono[:, :, None], 3, axis=2))
+
+    assert tracker.session.x.shape == (1, 2, 100, 100)
+    assert np.array_equal(tracker.session.x[0, 0], tracker.session.x[0, 1])
+
+
 def test_model_contract_uses_declared_tensor_names():
     class Tensor:
         def __init__(self, name, shape):

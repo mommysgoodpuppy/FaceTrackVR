@@ -963,13 +963,25 @@ class LipTracker:
                 frame = frame[:, :, 0]
             else:
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        if frame.shape != (400, 800):
-            frame = cv2.resize(frame, (800, 400), interpolation=cv2.INTER_AREA)
+        height, width = frame.shape
+        if width == height * 2:
+            if frame.shape != (400, 800):
+                frame = cv2.resize(frame, (800, 400), interpolation=cv2.INTER_AREA)
+        else:
+            if frame.shape != (400, 400):
+                frame = cv2.resize(frame, (400, 400), interpolation=cv2.INTER_AREA)
+            frame = np.concatenate((frame, frame), axis=1)
         return np.ascontiguousarray(frame, dtype=np.uint8)
 
     def _infer(self, camera_frame: np.ndarray) -> np.ndarray:
         b = self._model_byte_plane(camera_frame)
-        frame = cv2.medianBlur(np.ascontiguousarray(b), 5)
+        frame = np.concatenate(
+            (
+                cv2.medianBlur(np.ascontiguousarray(b[:, :400]), 5),
+                cv2.medianBlur(np.ascontiguousarray(b[:, 400:]), 5),
+            ),
+            axis=1,
+        )
         # Copies only feed the UI. Never draw into `frame`: inference consumes
         # this exact byte plane below.
         if bool(getattr(self.config, "gui_lip_preview", True)):
