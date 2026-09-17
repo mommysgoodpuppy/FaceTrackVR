@@ -13,6 +13,7 @@ from camera_behaviors import (
 )
 from settings.modules.LipSettingsModule import LipSettingsModule
 from lip import MouthCamera
+from windows_dshow_capture import _select_yuy2_format
 
 
 class _Value:
@@ -66,7 +67,8 @@ def test_ordinary_duplicate_camera_names_remain_separately_selectable():
     assert [label for label, _camera in choices] == ["Webcam (1)", "Webcam (2)"]
 
 
-def test_camera_behavior_follows_device_instead_of_selector_slot():
+def test_camera_behavior_follows_device_instead_of_selector_slot(monkeypatch):
+    monkeypatch.setattr(camera_behaviors.sys, "platform", "linux")
     by_name = stream_controller_for(
         "HTC Multimedia Camera: HTC Mult", "/dev/video2"
     )
@@ -142,6 +144,37 @@ def test_mouth_camera_accepts_only_unconverted_vft_frames():
     assert not MouthCamera._is_raw_vft_frame(
         np.zeros((400, 400, 3), dtype=np.uint8)
     )
+
+
+def test_windows_raw_capture_selects_400x400_yuy2_nearest_60fps():
+    formats = [
+        {
+            "index": 0,
+            "media_type_str": "RGB24",
+            "width": 400,
+            "height": 400,
+            "min_framerate": 60.0,
+            "max_framerate": 60.0,
+        },
+        {
+            "index": 1,
+            "media_type_str": "YUY2",
+            "width": 400,
+            "height": 400,
+            "min_framerate": 30.0,
+            "max_framerate": 30.0,
+        },
+        {
+            "index": 2,
+            "media_type_str": "YUY2",
+            "width": 400,
+            "height": 400,
+            "min_framerate": 60.00024,
+            "max_framerate": 60.00024,
+        },
+    ]
+
+    assert _select_yuy2_format(formats, 400, 400, 60.0)["index"] == 2
 
 
 def test_windows_ks_property_uses_selector_two_and_topology_flag(monkeypatch):

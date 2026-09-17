@@ -13,6 +13,7 @@ _VIDEO_INTERFACE_RE = re.compile(r"^(.*)-video-index(\d+)$")
 _COLLAPSED_INTERFACE_CAMERAS = ("bigeye", "htc multimedia camera")
 _HTC_STREAM_CAMERAS = (
     "htc multimedia camera",
+    "vid 0bb4 pid 0321",
     "vid 0bb4 pid 0581",
 )
 

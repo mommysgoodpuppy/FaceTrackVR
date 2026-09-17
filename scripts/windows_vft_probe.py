@@ -5,7 +5,7 @@ Run from the repository root with the Windows project environment active:
     python scripts/windows_vft_probe.py
 
 The probe performs the HTC extension-unit startup sequence, captures raw
-400x400 YUY2 frames through OpenCV's DirectShow backend, and always attempts
+400x400 YUY2 samples through a native DirectShow graph, and always attempts
 to turn the emitters off before exiting.
 """
 
@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import sys
+import threading
 import time
 
 
@@ -21,10 +22,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 APP_DIR = REPO_ROOT / "EyeTrackApp"
 sys.path.insert(0, str(APP_DIR))
 
-import cv2  # noqa: E402
-
 from camera_behaviors import stream_controller_for  # noqa: E402
 from camera_enum import list_uvc_cameras  # noqa: E402
+from windows_dshow_capture import capture_yuy2  # noqa: E402
 
 
 def _is_vft(camera: dict) -> bool:
@@ -86,50 +86,38 @@ def main() -> int:
     if controller is None:
         raise RuntimeError("selected device did not activate the HTC controller")
 
-    capture = None
     enabled = False
     frames = 0
     raw_frames = 0
     shapes: set[tuple[int, ...]] = set()
-    started = time.monotonic()
+    stop_event = threading.Event()
+    timer = None
+    capture_elapsed = 0.0
     try:
         print(f"Enabling HTC stream controls on DirectShow index {index}...")
         controller.enable()
         enabled = True
 
-        capture = cv2.VideoCapture(index, cv2.CAP_DSHOW)
-        capture.set(cv2.CAP_PROP_CONVERT_RGB, 0)
-        capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"YUY2"))
-        capture.set(cv2.CAP_PROP_FRAME_WIDTH, 400)
-        capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 400)
-        capture.set(cv2.CAP_PROP_FPS, 60)
-        capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        if not capture.isOpened():
-            raise RuntimeError("DirectShow could not open the tracker")
-
-        print(
-            "Negotiated: "
-            f"{capture.get(cv2.CAP_PROP_FRAME_WIDTH):g}x"
-            f"{capture.get(cv2.CAP_PROP_FRAME_HEIGHT):g} @ "
-            f"{capture.get(cv2.CAP_PROP_FPS):g} fps, "
-            f"convert_rgb={capture.get(cv2.CAP_PROP_CONVERT_RGB):g}"
-        )
-        deadline = time.monotonic() + max(args.seconds, 0.25)
-        while time.monotonic() < deadline:
-            ok, frame = capture.read()
-            if not ok:
-                continue
+        def receive(frame):
+            nonlocal frames, raw_frames
             frames += 1
             shapes.add(tuple(frame.shape))
             raw_frames += int(_frame_is_raw_yuy2(frame))
+
+        timer = threading.Timer(max(args.seconds, 0.25), stop_event.set)
+        timer.start()
+        capture_started = time.monotonic()
+        capture_yuy2(index, stop_event, receive)
+        capture_elapsed = time.monotonic() - capture_started
     finally:
-        if capture is not None:
-            capture.release()
+        stop_event.set()
+        if timer is not None:
+            timer.cancel()
         if enabled:
             print("Disabling HTC stream controls...")
             controller.disable()
 
-    elapsed = max(time.monotonic() - started, 1e-6)
+    elapsed = max(capture_elapsed, 1e-6)
     print(
         f"Captured {frames} frames in {elapsed:.2f}s "
         f"({frames / elapsed:.1f} fps); shapes={sorted(shapes)}"
@@ -139,8 +127,8 @@ def main() -> int:
         return 1
     if raw_frames != frames:
         print(
-            "FAIL: frames were converted instead of raw 320,000-byte YUY2. "
-            "The application needs a dedicated DirectShow capture path.",
+            "FAIL: DirectShow returned samples that were not raw "
+            "320,000-byte YUY2.",
             file=sys.stderr,
         )
         return 1

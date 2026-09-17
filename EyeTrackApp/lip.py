@@ -128,6 +128,28 @@ class MouthCamera:
             backend = cv2.CAP_ANY
         cap = None
         try:
+            if (
+                sys.platform == "win32"
+                and self._stream_controller is not None
+                and isinstance(open_source, int)
+            ):
+                from windows_dshow_capture import capture_yuy2
+
+                def publish(frame):
+                    with self._cond:
+                        self._frame = frame
+                        self._frame_id += 1
+                        self._cond.notify_all()
+                    self._ready.set()
+
+                try:
+                    capture_yuy2(open_source, self._stop, publish)
+                except Exception as e:
+                    self.error = f"camera capture failed: {e}"
+                    logger.error(self.error)
+                    self._ready.set()
+                return
+
             cap = cv2.VideoCapture(open_source, backend)
             if self._stream_controller is not None:
                 cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
