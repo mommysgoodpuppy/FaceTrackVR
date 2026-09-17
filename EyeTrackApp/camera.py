@@ -91,6 +91,7 @@ _UVC_REQUESTED_FPS = 120.0
 # which would peg the thread and starve the UI of the GIL.
 _NETWORK_RECONNECT_BACKOFF_MIN = 0.5
 _NETWORK_RECONNECT_BACKOFF_MAX = 5.0
+_CAPTURE_BACKPRESSURE_LOG_INTERVAL = 5.0
 # If no JPEG EOI arrives within this many buffered bytes, assume a desync and
 # discard the buffer. Prevents unbounded memory growth when the firmware
 # sends malformed or truncated frames (cable noise, firmware hang).
@@ -178,6 +179,8 @@ class Camera:
         # Monotonic deadline for the "not found, retrying" log; throttled to once per 5 s
         # so the log isn't flooded during the 3-second UVC backoff window.
         self._retry_log_backoff: float = 0.0
+        self._capture_backpressure_events = 0
+        self._capture_backpressure_window_started = time.monotonic()
         # Network (HTTP) reconnect backoff: monotonic deadline before the next reopen
         # attempt, and the current (exponentially growing) delay used to set it.
         self._network_reconnect_backoff: float = 0.0
@@ -796,14 +799,21 @@ class Camera:
                 pass
 
     def push_image_to_queue(self, image, frame_number, fps):
-        # If there's backpressure, just yell. We really shouldn't have this unless we start getting
-        # some sort of capture event conflict though.
         qsize = self.camera_output_outgoing.qsize()
         if qsize > 1:
-            logger.warning(
-                "Capture queue backpressure of %s. Check for crash or timing issues in algorithm.",
-                qsize,
-            )
+            self._capture_backpressure_events += 1
+            now = time.monotonic()
+            elapsed = now - self._capture_backpressure_window_started
+            if elapsed >= _CAPTURE_BACKPRESSURE_LOG_INTERVAL:
+                logger.warning(
+                    "Capture queue backpressure: %d events in %.1fs "
+                    "(current depth %d); stale frames are being dropped.",
+                    self._capture_backpressure_events,
+                    elapsed,
+                    qsize,
+                )
+                self._capture_backpressure_events = 0
+                self._capture_backpressure_window_started = now
         ts = time.perf_counter()
         self._put_frame_drop_oldest(
             self.camera_output_outgoing, (image, frame_number, fps, ts)

@@ -18,6 +18,7 @@ Compatible model pipeline (weights are user-supplied, never distributed):
 """
 
 from contextlib import nullcontext
+from collections import deque
 import logging
 import math
 import os
@@ -216,6 +217,11 @@ class MouthCamera:
         with self._cond:
             if self._frame_id <= last_id:
                 self._cond.wait(timeout)
+            # Condition waits may time out or wake spuriously. Do not hand the
+            # previous frame back to the inference loop: doing so made the CPU
+            # worker repeatedly infer one stale image between 60 Hz captures.
+            if self._frame_id <= last_id:
+                return None, last_id
             return self._frame, self._frame_id
 
     def stop(self):
@@ -858,7 +864,7 @@ class LipTracker:
         self.last_shapes: dict = {}
         self.presence: float = 0.0
         self.inference_hz: float = 0.0
-        self._last_inference_at = None
+        self._inference_times = deque()
         self._preview_lock = threading.Lock()
         self._raw_preview: np.ndarray | None = None
         self._model_preview: np.ndarray | None = None
@@ -927,6 +933,8 @@ class LipTracker:
         if shared is None and self._own_client is None:
             self._own_client = self._make_own_client()
         self._stop.clear()
+        self._inference_times.clear()
+        self.inference_hz = 0.0
         global _active_tracker
         _active_tracker = self
         self._thread = threading.Thread(target=self._loop, daemon=True, name="LipTracker")
@@ -1122,10 +1130,15 @@ class LipTracker:
                 continue
             self.presence = float(raw[0])
             now = time.monotonic()
-            if self._last_inference_at is not None:
-                hz = 1.0 / max(now - self._last_inference_at, 1e-6)
-                self.inference_hz = hz if self.inference_hz == 0.0 else self.inference_hz * 0.9 + hz * 0.1
-            self._last_inference_at = now
+            self._inference_times.append(now)
+            window_start = now - 3.0
+            while self._inference_times and self._inference_times[0] < window_start:
+                self._inference_times.popleft()
+            if len(self._inference_times) > 1:
+                elapsed = now - self._inference_times[0]
+                self.inference_hz = (len(self._inference_times) - 1) / max(
+                    elapsed, 1e-6
+                )
             model_shapes = self.post(raw)
             named_shapes = self._apply_optional_smoothing(
                 model_shapes[:len(LIP_SHAPE_V2)]

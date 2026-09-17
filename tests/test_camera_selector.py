@@ -146,6 +146,18 @@ def test_mouth_camera_accepts_only_unconverted_vft_frames():
     )
 
 
+def test_mouth_camera_does_not_return_a_stale_frame_after_timeout():
+    camera = MouthCamera("unused")
+    frame = np.zeros((400, 800), dtype=np.uint8)
+    camera._frame = frame
+    camera._frame_id = 4
+
+    assert camera.read(timeout=0, last_id=4) == (None, 4)
+    returned, frame_id = camera.read(timeout=0, last_id=3)
+    assert returned is frame
+    assert frame_id == 4
+
+
 def test_windows_raw_capture_selects_400x400_yuy2_nearest_60fps():
     formats = [
         {
