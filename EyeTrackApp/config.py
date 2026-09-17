@@ -454,8 +454,9 @@ class EyeTrackSettingsConfig(BaseModel):
     gui_lip_bounce_response_hz: float = 5.0
     gui_lip_bounce_damping: float = 0.6
     gui_lip_bounce_mix: float = 10.0
-    # Optional VRCFT Parameter Adjustment mutation.  Each pair is the input
-    # floor/ceiling used by VRCFT's unclamped (value-floor)/(ceiling-floor).
+    # Optional output parameter-range mutation, shared by VRCFT, Direct and
+    # New Smooth. Each pair is the input floor/ceiling used by VRCFT's
+    # unclamped (value-floor)/(ceiling-floor) formula.
     gui_lip_vrcft_adjust: bool = False
     gui_lip_adjust_jaw_open_min: float = 0.0
     gui_lip_adjust_jaw_open_max: float = 1.0

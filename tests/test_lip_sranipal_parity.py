@@ -491,6 +491,62 @@ def test_improved_v2_optional_jaw_boost_matches_vrcft_formula():
     assert boosted["v2/MouthClosed"] == pytest.approx(0.3)
 
 
+def test_improved_v2_applies_parameter_ranges_to_direct_and_new_smooth_graph():
+    weights = _weights(
+        JawOpen=0.5,
+        MouthApeShape=0.4,
+        MouthUpperUpRight=0.7,
+        MouthUpperOverturn=0.2,
+        MouthPout=0.5,
+        MouthLowerOverturn=0.4,
+        MouthSmileRight=0.5,
+        MouthSadRight=0.1,
+        TongueLongStep1=0.6,
+        TongueLongStep2=0.8,
+    )
+    ranges = {
+        "jaw_open": (0.2, 0.8),
+        "mouth_closed": (0.2, 0.6),
+        "mouth_open": (0.2, 0.8),
+        "smile": (0.2, 0.8),
+        "frown": (0.0, 0.4),
+        "pucker": (0.25, 0.75),
+        "funnel": (0.2, 0.6),
+        "tongue_out": (0.4, 1.0),
+    }
+
+    improved = map_to_improved_v2(weights, parameter_ranges=ranges)
+
+    assert improved["v2/JawOpen"] == pytest.approx(0.5)
+    assert improved["v2/MouthClosed"] == pytest.approx(0.5)
+    assert improved["v2/MouthUpperUpRight"] == pytest.approx(0.5)
+    assert improved["v2/LipPucker"] == pytest.approx(0.5)
+    assert improved["v2/LipFunnel"] == pytest.approx(0.25)
+    assert improved["v2/TongueOut"] == pytest.approx(0.5)
+    assert improved["v2/SmileFrownRight"] == pytest.approx(0.25)
+
+
+def test_improved_v2_default_parameter_ranges_are_exact_identity():
+    weights = _weights(
+        JawOpen=0.37,
+        MouthSmileLeft=0.6,
+        MouthSadLeft=0.2,
+        TongueLongStep1=0.4,
+        TongueLongStep2=0.8,
+    )
+    defaults = {
+        group: (0.0, 1.0)
+        for group in (
+            "jaw_open", "mouth_closed", "mouth_open", "smile",
+            "frown", "pucker", "funnel", "tongue_out",
+        )
+    }
+
+    assert map_to_improved_v2(
+        weights, parameter_ranges=defaults
+    ) == map_to_improved_v2(weights)
+
+
 def test_improved_v2_mapping_preserves_independent_mouth_stretch_sides():
     improved = map_to_improved_v2(
         _weights(MouthSadRight=0.25, MouthSadLeft=0.75)

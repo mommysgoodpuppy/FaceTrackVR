@@ -238,15 +238,23 @@ def apply_vrcft_parameter_adjustment(shapes: dict, ranges: dict) -> dict:
             continue
         for name in names:
             if name in adjusted:
-                # C# executes this expression as System.Single throughout.
-                value32 = np.float32(adjusted[name])
-                floor32 = np.float32(floor)
-                ceiling32 = np.float32(ceiling)
-                adjusted[name] = float(
-                    np.float32(value32 - floor32)
-                    / np.float32(ceiling32 - floor32)
+                adjusted[name] = _apply_parameter_range(
+                    adjusted[name], floor, ceiling
                 )
     return adjusted
+
+
+def _apply_parameter_range(value: float, floor: float, ceiling: float) -> float:
+    """VRCFT's unclamped System.Single parameter-range mutation."""
+    if ceiling == floor:
+        return float(value)
+    value32 = np.float32(value)
+    floor32 = np.float32(floor)
+    ceiling32 = np.float32(ceiling)
+    return float(
+        np.float32(value32 - floor32)
+        / np.float32(ceiling32 - floor32)
+    )
 
 
 def apply_global_response(values: dict, minimum: float, maximum: float, curve: float) -> dict:
@@ -268,7 +276,12 @@ def apply_global_response(values: dict, minimum: float, maximum: float, curve: f
     return out
 
 
-def map_to_improved_v2(w: dict, *, boost_jaw_open: bool = False) -> dict:
+def map_to_improved_v2(
+    w: dict,
+    *,
+    boost_jaw_open: bool = False,
+    parameter_ranges: dict | None = None,
+) -> dict:
     """Direct, compact v2 mouth outputs from model shapes.
 
     Unlike the compatibility path, this does not inflate one model channel
@@ -278,17 +291,29 @@ def map_to_improved_v2(w: dict, *, boost_jaw_open: bool = False) -> dict:
     weights have no physical meaning.
     """
     avg = lambda left, right: (left + right) * 0.5
+
+    def ranged(group: str, value: float) -> float:
+        if parameter_ranges is None:
+            return float(value)
+        floor, ceiling = parameter_ranges.get(group, (0.0, 1.0))
+        if floor == 0.0 and ceiling == 1.0:
+            return float(value)
+        return _apply_parameter_range(value, floor, ceiling)
+
     upper_right = max(0.0, w["MouthUpperUpRight"] - w["MouthUpperOverturn"])
     upper_left = max(0.0, w["MouthUpperUpLeft"] - w["MouthUpperOverturn"])
     lower_right = max(0.0, w["MouthLowerDownRight"] - w["MouthLowerOverturn"])
     lower_left = max(0.0, w["MouthLowerDownLeft"] - w["MouthLowerOverturn"])
     return {
-        "v2/MouthClosed": w["MouthApeShape"],
+        "v2/MouthClosed": ranged("mouth_closed", w["MouthApeShape"]),
         # Keep the two model opening concepts independent. The compatibility
         # path sums JawOpen + MouthApeShape, which amplifies their shared noise.
-        "v2/JawOpen": (
-            w["JawOpen"] + w["MouthApeShape"]
-            if boost_jaw_open else w["JawOpen"]
+        "v2/JawOpen": ranged(
+            "jaw_open",
+            (
+                w["JawOpen"] + w["MouthApeShape"]
+                if boost_jaw_open else w["JawOpen"]
+            ),
         ),
         "v2/JawX": w["JawRight"] - w["JawLeft"],
         "v2/JawForward": w["JawForward"],
@@ -298,17 +323,27 @@ def map_to_improved_v2(w: dict, *, boost_jaw_open: bool = False) -> dict:
         "v2/MouthRaiserLower": w["MouthLowerOverlay"],
         "v2/TongueX": w["TongueRight"] - w["TongueLeft"],
         "v2/TongueY": w["TongueUp"] - w["TongueDown"],
-        "v2/TongueOut": avg(w["TongueLongStep1"], w["TongueLongStep2"]),
+        "v2/TongueOut": ranged(
+            "tongue_out", avg(w["TongueLongStep1"], w["TongueLongStep2"])
+        ),
         "v2/LipSuckUpper": w["MouthUpperInside"],
         "v2/LipSuckLower": w["MouthLowerInside"],
-        "v2/LipPucker": w["MouthPout"],
+        "v2/LipPucker": ranged("pucker", w["MouthPout"]),
         # Preserve the lower-overturn signal instead of copying upper overturn
         # into all four funnel shapes and averaging it back out.
-        "v2/LipFunnel": avg(w["MouthUpperOverturn"], w["MouthLowerOverturn"]),
+        "v2/LipFunnel": ranged(
+            "funnel", avg(w["MouthUpperOverturn"], w["MouthLowerOverturn"])
+        ),
         "v2/CheekPuffSuckRight": w["CheekPuffRight"] - w["CheekSuck"],
         "v2/CheekPuffSuckLeft": w["CheekPuffLeft"] - w["CheekSuck"],
-        "v2/SmileFrownRight": w["MouthSmileRight"] - w["MouthSadRight"],
-        "v2/SmileFrownLeft": w["MouthSmileLeft"] - w["MouthSadLeft"],
+        "v2/SmileFrownRight": (
+            ranged("smile", w["MouthSmileRight"])
+            - ranged("frown", w["MouthSadRight"])
+        ),
+        "v2/SmileFrownLeft": (
+            ranged("smile", w["MouthSmileLeft"])
+            - ranged("frown", w["MouthSadLeft"])
+        ),
         # This avatar exposes the two stretch channels independently. The
         # model has matching per-side Sad inputs, so preserve them
         # instead of inheriting VRCFT's compatibility quirk that copies the
@@ -319,9 +354,11 @@ def map_to_improved_v2(w: dict, *, boost_jaw_open: bool = False) -> dict:
             w["MouthUpperRight"] + w["MouthLowerRight"]
             - w["MouthUpperLeft"] - w["MouthLowerLeft"]
         ) * 0.5,
-        "v2/MouthLowerDown": avg(lower_right, lower_left),
-        "v2/MouthUpperUpRight": upper_right,
-        "v2/MouthUpperUpLeft": upper_left,
+        "v2/MouthLowerDown": ranged(
+            "mouth_open", avg(lower_right, lower_left)
+        ),
+        "v2/MouthUpperUpRight": ranged("mouth_open", upper_right),
+        "v2/MouthUpperUpLeft": ranged("mouth_open", upper_left),
         # The model output vocabulary has no direct equivalents for these.
         "v2/MouthPress": 0.0,
         "v2/MouthTightenerRight": 0.0,
@@ -994,6 +1031,7 @@ class LipTracker:
                             )
                         )
                     ),
+                    parameter_ranges=self._parameter_adjustment_ranges(),
                 )
                 if mode != "vrcft" else None
             )
@@ -1015,15 +1053,21 @@ class LipTracker:
             self._emit(unified, improved)
 
     def _apply_optional_vrcft_adjustment(self, unified: dict) -> dict:
-        if not bool(getattr(self.config, "gui_lip_vrcft_adjust", False)):
+        ranges = self._parameter_adjustment_ranges()
+        if ranges is None:
             return unified
+        return apply_vrcft_parameter_adjustment(unified, ranges)
+
+    def _parameter_adjustment_ranges(self) -> dict | None:
+        if not bool(getattr(self.config, "gui_lip_vrcft_adjust", False)):
+            return None
         ranges = {}
         for group in _VRCFT_ADJUST_GROUPS:
             ranges[group] = (
                 float(getattr(self.config, f"gui_lip_adjust_{group}_min", 0.0)),
                 float(getattr(self.config, f"gui_lip_adjust_{group}_max", 1.0)),
             )
-        return apply_vrcft_parameter_adjustment(unified, ranges)
+        return ranges
 
     def _output_mode(self) -> str:
         mode = str(getattr(self.config, "gui_lip_output_mode", "vrcft"))
