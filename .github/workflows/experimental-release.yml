@@ -140,6 +140,7 @@ jobs:
       - name: Replace rolling prerelease
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           gh release delete experimental --cleanup-tag --yes || true
           gh release create experimental \
