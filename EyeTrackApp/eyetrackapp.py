@@ -26,6 +26,7 @@ LICENSE: Babble Software Distribution License 1.0
 
 import logging
 import os
+import importlib.util
 import shutil
 import subprocess
 import sys
@@ -38,7 +39,7 @@ import queue
 import cv2
 import requests
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from camera_widget import CameraWidget
 from camera_enum import (
     discover_etvr_mdns_sources,
@@ -93,6 +94,41 @@ os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
 WINDOW_NAME = "EyeTrackApp"
 
 _pywinstyles_mod = None
+
+
+def _start_runtime_repl(namespace: dict):
+    """Start the source-only runtime REPL when explicitly enabled.
+
+    The module is loaded by path so PyInstaller does not discover and bundle
+    it. This endpoint executes arbitrary Python and must remain a local,
+    per-launch development facility rather than a persisted app setting.
+    """
+    if os.environ.get("FACETRACKVR_RUNTIME_REPL") != "1":
+        return None
+    if getattr(sys, "frozen", False):
+        logger.warning("Runtime REPL is unavailable in packaged builds")
+        return None
+
+    repl_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "scripts",
+        "runtime_repl.py",
+    )
+    spec = importlib.util.spec_from_file_location("facetrackvr_runtime_repl", repl_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load runtime REPL from {repl_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    port = int(os.environ.get("FACETRACKVR_RUNTIME_REPL_PORT", "5678"))
+    token = os.environ.get("FACETRACKVR_RUNTIME_REPL_TOKEN") or None
+    server = module.RuntimeReplServer(namespace, port=port, token=token).start()
+    server.namespace["repl"] = server
+    logger.warning(
+        "Development runtime REPL listening on 127.0.0.1:%d (token: %s)",
+        server.port,
+        server.token,
+    )
+    return server
 
 
 def apply_theme_to_titlebar(win: tk.Misc) -> None:
@@ -1608,6 +1644,33 @@ def main():
             os._exit(0)
 
     app = AppUI()
+
+    def on_tk(callback, *args, timeout=5.0, **kwargs):
+        """Run a callable on Tk's main thread and return its result."""
+        result = Future()
+
+        def invoke():
+            try:
+                result.set_result(callback(*args, **kwargs))
+            except BaseException as exc:
+                result.set_exception(exc)
+
+        app.root.after(0, invoke)
+        return result.result(timeout=timeout)
+
+    app.runtime_repl = _start_runtime_repl(
+        {
+            "app": app,
+            "config": config,
+            "eyes": eyes,
+            "settings": settings,
+            "osc_manager": osc_manager,
+            "lip_tracker": lip_tracker,
+            "on_tk": on_tk,
+            "threading": threading,
+            "sys": sys,
+        }
+    )
     if (not is_macos) and (openvr_service is not None):
         openvr_service.window = app
     threading.Thread(
