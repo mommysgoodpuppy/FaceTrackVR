@@ -21,11 +21,17 @@ from contextlib import nullcontext
 import logging
 import math
 import os
+import sys
 import threading
 import time
 
 import numpy as np
 from camera_behaviors import stream_controller_for
+from camera_enum import (
+    is_uvc_named_source,
+    parse_uvc_named_source,
+    resolve_uvc_address_to_index,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,27 +53,88 @@ class MouthCamera:
         self.device = device
         self._stop = threading.Event()
         self._ready = threading.Event()
-        self._stream_controller = stream_controller_for("", device)
+        self._stream_controller = None
         self._frame: np.ndarray | None = None
         self._frame_id = 0
         self._cond = threading.Condition()
         self._thread: threading.Thread | None = None
         self.error: str | None = None
 
+    @staticmethod
+    def _is_raw_vft_frame(frame: np.ndarray) -> bool:
+        return (
+            frame.dtype == np.uint8
+            and frame.nbytes == 400 * 400 * 2
+            and frame.shape in ((400, 400, 2), (400, 800))
+        )
+
     def _loop(self):
+        open_source = self.device
+        camera_name = ""
+        camera_address = str(self.device)
+        camera_index = None
+        if isinstance(self.device, str) and is_uvc_named_source(self.device):
+            camera_name, saved_address = parse_uvc_named_source(self.device)
+            resolved = resolve_uvc_address_to_index(camera_name, saved_address)
+            if resolved is None:
+                self.error = f"cannot find {camera_name or self.device}"
+                logger.error(self.error)
+                self._ready.set()
+                return
+            camera_index, camera_address = resolved
+            if sys.platform.startswith("linux") and camera_address.startswith("/dev/"):
+                open_source = camera_address
+            else:
+                open_source = camera_index
+        elif sys.platform == "win32":
+            # Older settings stored only the Windows PnP address. Resolve it
+            # once so existing configurations migrate without asking the user
+            # to select the tracker again.
+            resolved = resolve_uvc_address_to_index("", camera_address)
+            if resolved is not None:
+                camera_index, camera_address = resolved
+                open_source = camera_index
+
+        self._stream_controller = stream_controller_for(
+            camera_name, camera_address, device_index=camera_index
+        )
         if self._stream_controller is not None:
             try:
                 self._stream_controller.enable()
             except Exception as e:
                 self.error = f"camera initialization failed: {e}"
                 logger.error(self.error)
+                try:
+                    # A failed handshake can occur after some registers were
+                    # written. Attempt shutdown even when enable() did not get
+                    # far enough to set the controller's enabled flag.
+                    self._stream_controller.set_enabled(False)
+                except Exception:
+                    logger.warning(
+                        "Camera cleanup after failed initialization also failed",
+                        exc_info=True,
+                    )
                 self._ready.set()
                 return
-        cap = cv2.VideoCapture(self.device, cv2.CAP_V4L2)
+        if sys.platform == "win32" and isinstance(open_source, int):
+            backend = cv2.CAP_DSHOW
+        elif (
+            sys.platform.startswith("linux")
+            and isinstance(open_source, str)
+            and open_source.startswith("/dev/")
+        ):
+            backend = cv2.CAP_V4L2
+        else:
+            backend = cv2.CAP_ANY
+        cap = None
         try:
+            cap = cv2.VideoCapture(open_source, backend)
             if self._stream_controller is not None:
                 cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
-                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"YUYV"))
+                # Windows/DirectShow names the native format YUY2; Linux/V4L2
+                # exposes the byte-identical packed format as YUYV.
+                fourcc = "YUY2" if sys.platform == "win32" else "YUYV"
+                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 400)
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 400)
                 cap.set(cv2.CAP_PROP_FPS, 60)
@@ -82,13 +149,33 @@ class MouthCamera:
                 if not ok:
                     time.sleep(0.005)
                     continue
+                if (
+                    self._stream_controller is not None
+                    and not self._is_raw_vft_frame(frame)
+                ):
+                    self.error = (
+                        "camera backend converted the Vive Facial Tracker "
+                        f"frame (shape={frame.shape}, bytes={frame.nbytes}); "
+                        "raw 400x400 YUY2 is required"
+                    )
+                    logger.error(self.error)
+                    self._ready.set()
+                    return
                 with self._cond:
                     self._frame = frame
                     self._frame_id += 1
                     self._cond.notify_all()
                 self._ready.set()
         finally:
-            cap.release()
+            if cap is not None:
+                cap.release()
+            if self._stream_controller is not None:
+                try:
+                    self._stream_controller.disable()
+                except Exception:
+                    logger.warning(
+                        "Camera shutdown control failed", exc_info=True
+                    )
 
     def start(self):
         self._stop.clear()

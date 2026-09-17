@@ -6,7 +6,7 @@ from pydantic import model_validator
 
 from settings.modules.BaseModule import BaseSettingsModule, BaseValidationModel
 
-from camera_enum import label_uvc_cameras, list_uvc_cameras
+from camera_enum import format_uvc_named_source, label_uvc_cameras, list_uvc_cameras
 from localization import tr
 from utils.tooltips import attach_tooltip
 
@@ -443,9 +443,10 @@ class LipSettingsModule(BaseSettingsModule):
                     return
                 choices = label_uvc_cameras(result["cameras"])
                 self._device_display_map = {no_source_label: ""}
-                self._device_display_map.update({
-                    label: camera["address"] for label, camera in choices
-                })
+                for label, camera in choices:
+                    self._device_display_map[label] = format_uvc_named_source(
+                        camera["name"], camera["address"]
+                    )
                 current = self._device_display_map.get(
                     dev_var.get(), dev_var.get()
                 )
@@ -453,6 +454,12 @@ class LipSettingsModule(BaseSettingsModule):
                     address: label
                     for label, address in self._device_display_map.items()
                 }
+                # Recognize the address-only format used by older mouth
+                # settings, then migrate it to the canonical uvc:name@address
+                # source the next time settings are saved.
+                address_to_label.update({
+                    camera["address"]: label for label, camera in choices
+                })
                 dev_entry.configure(
                     values=[no_source_label]
                     + [label for label, _camera in choices]

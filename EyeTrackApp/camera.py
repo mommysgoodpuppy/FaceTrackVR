@@ -500,7 +500,13 @@ class Camera:
                         )
                         if is_uvc:
                             controller = stream_controller_for(
-                                camera_name, camera_address
+                                camera_name,
+                                camera_address,
+                                device_index=(
+                                    open_source
+                                    if isinstance(open_source, int)
+                                    else None
+                                ),
                             )
                             if controller is not None:
                                 try:
