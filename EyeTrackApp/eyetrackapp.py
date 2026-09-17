@@ -417,6 +417,7 @@ def main():
             apply_theme_to_titlebar(self.root)
             self.focus_paused = False
             self.current_page = "tracking"
+            self._preview_diag_state = None
             initial_mode = getattr(config.settings, "gui_setup_mode", "etvr") or "etvr"
             if initial_mode not in ("etvr", "bigscreen"):
                 initial_mode = "etvr"
@@ -1530,18 +1531,48 @@ def main():
                 if self.focus_paused:
                     self.focus_paused = False
                     self.focus_label.pack_forget()
-                if self.current_page == "tracking":
-                    self._sync_global_mode_buttons()
-                    for eye in eyes:
-                        if eye.started():
-                            eye.render_tick()
-                    self._sync_global_calibration_button()
-                    self._sync_next_smartcal_reset_button()
             else:
                 if not self.focus_paused:
                     self.focus_paused = True
                     self.focus_label.pack(side="left", padx=12)
                 interval = 100
+
+            if self.current_page == "tracking":
+                # SteamVR can display the desktop window without granting it
+                # keyboard focus. Keep its visible camera previews live at the
+                # already-reduced 10 Hz unfocused tick rate.
+                for eye in eyes:
+                    if eye.started():
+                        eye.render_tick()
+                if has_focus:
+                    self._sync_global_mode_buttons()
+                    self._sync_global_calibration_button()
+                    self._sync_next_smartcal_reset_button()
+
+            preview_diag_state = (
+                self.current_page,
+                has_focus,
+                tuple(
+                    (
+                        eye.started(),
+                        eye.mode_var.get(),
+                        eye._last_mode_readout,
+                        eye.ransac.calibration_start_time is not None,
+                    )
+                    for eye in eyes
+                ),
+            )
+            if preview_diag_state != self._preview_diag_state:
+                self._preview_diag_state = preview_diag_state
+                logger.info(
+                    "Preview UI state: page=%s focus=%s eyes=%s",
+                    preview_diag_state[0],
+                    preview_diag_state[1],
+                    tuple(
+                        state + (eye.image_queue.qsize(),)
+                        for state, eye in zip(preview_diag_state[2], eyes)
+                    ),
+                )
 
             # Run settings validation + debounce-save regardless of focus so
             # changes made while the SteamVR overlay has focus still apply

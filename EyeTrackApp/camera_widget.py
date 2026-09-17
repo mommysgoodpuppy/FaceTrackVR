@@ -1279,7 +1279,12 @@ class CameraWidget:
                 self.eye_id, new_source,
             )
 
-        if self.settings.gui_disable_gui == False:
+        # The persisted GUI-off flag can outlive the withdrawn window that set
+        # it (for example after a restart).  If this widget is actually mapped,
+        # it must remain authoritative: otherwise the visible preview stays on
+        # its initial gray "Calibrating" placeholder while tracking continues.
+        gui_visible = self.frame is not None and bool(self.frame.winfo_viewable())
+        if not self.settings.gui_disable_gui or gui_visible:
             if self.config.rotation_angle != int(self.rotation_var.get()):
                 self.config.rotation_angle = int(self.rotation_var.get())
                 changed = True
