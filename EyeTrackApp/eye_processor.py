@@ -653,13 +653,18 @@ class EyeProcessor:
         ellseg_debug_rate = bool(
             getattr(self.settings, "gui_ellseg_debug_60hz", False)
         )
+        ellseg_high_quality = bool(
+            getattr(self.settings, "gui_ellseg_hq_mode", False)
+        )
         if self.next_auxiliary_tracker is None:
             self.next_auxiliary_tracker = NextAuxiliaryTracker(
                 use_gpu=bool(self.settings.gui_use_gpu),
                 debug_rate=ellseg_debug_rate,
+                high_quality=ellseg_high_quality,
             )
         else:
             self.next_auxiliary_tracker.set_debug_rate(ellseg_debug_rate)
+            self.next_auxiliary_tracker.set_high_quality(ellseg_high_quality)
         self.next_auxiliary_tracker.set_dilation_output_range(
             getattr(self.settings, "gui_ellseg_dilation_min_percent", 0) / 100.0,
             getattr(self.settings, "gui_ellseg_dilation_max_percent", 100) / 100.0,

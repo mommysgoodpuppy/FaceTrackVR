@@ -23,6 +23,16 @@ def test_preprocess_width_aligns_and_center_crops_square_bsb_frame():
     assert abs(float(tensor.std()) - 1.0) < 1e-5
 
 
+def test_fast_preprocess_uses_reduced_spatial_resolution():
+    frame = np.tile(np.arange(400, dtype=np.uint8), (400, 1))
+
+    tensor, transform = _preprocess(frame, input_size=(288, 224))
+
+    assert tensor.shape == (1, 1, 224, 288)
+    assert transform.scale == 0.72
+    assert transform.vertical_shift == -32.0
+
+
 def test_bsb_gamma_brightening_is_nonlinear_and_remains_standardized():
     ramp = np.tile(np.arange(256, dtype=np.uint8), (192, 1))
 
@@ -65,6 +75,12 @@ def test_ellseg_onnx_artifact_loads_and_has_expected_contract():
     )[0]
 
     assert output.shape == (1, 3, 240, 320)
+
+    fast_output = session.run(
+        None,
+        {session.get_inputs()[0].name: np.zeros((1, 1, 224, 288), np.float32)},
+    )[0]
+    assert fast_output.shape == (1, 3, 224, 288)
 
 
 def _unstarted_runtime(*, use_gpu, high_rate=False):

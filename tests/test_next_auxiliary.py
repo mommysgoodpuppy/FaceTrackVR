@@ -65,6 +65,21 @@ def test_next_auxiliary_debug_mode_submits_on_every_tracking_tick():
     assert 24.0 < debug.model_rate_hz < 26.0
 
 
+def test_ellseg_quality_mode_controls_normal_sampling_cadence():
+    tracker = NextAuxiliaryTracker(detector=RadiusDetector())
+
+    assert tracker._normal_rate_hz == 0.5
+    assert tracker._interval == 2.0
+
+    tracker.set_high_quality(True)
+    assert tracker._normal_rate_hz == 1.0
+    assert tracker._interval == 1.0
+
+    tracker.set_high_quality(False)
+    assert tracker._normal_rate_hz == 0.5
+    assert tracker._interval == 2.0
+
+
 def test_manual_dilation_range_maps_eighty_percent_to_full_output():
     tracker = NextAuxiliaryTracker(detector=RadiusDetector())
     tracker.set_dilation_output_range(0.0, 0.8)

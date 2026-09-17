@@ -28,8 +28,8 @@ from utils.onnx_runtime import DML_INFERENCE_LOCK, create_inference_session
 logger = logging.getLogger(__name__)
 
 _MODEL_PATH = "Models/EllSeg_all.onnx"
-_INPUT_WIDTH = 320
-_INPUT_HEIGHT = 240
+_FAST_INPUT_SIZE = (288, 224)
+_HQ_INPUT_SIZE = (320, 240)
 
 
 @dataclass(frozen=True)
@@ -60,10 +60,17 @@ class _EllSegRuntime:
         )
         self._thread.start()
 
-    def submit(self, frame: np.ndarray, gamma: float = 0.8) -> Future | None:
+    def submit(
+        self,
+        frame: np.ndarray,
+        gamma: float = 0.8,
+        input_size: tuple[int, int] = _FAST_INPUT_SIZE,
+    ) -> Future | None:
         future = Future()
         try:
-            self._jobs.put_nowait((frame.copy(), future, float(gamma)))
+            self._jobs.put_nowait(
+                (frame.copy(), future, float(gamma), tuple(input_size))
+            )
         except queue.Full:
             return None
         return future
@@ -139,7 +146,7 @@ class _EllSegRuntime:
         session = None
         input_name = None
         while True:
-            frame, future, gamma = self._jobs.get()
+            frame, future, gamma, input_size = self._jobs.get()
             if future.cancelled():
                 continue
             try:
@@ -147,7 +154,11 @@ class _EllSegRuntime:
                     session = self._create_session()
                     self._configure_cpu_worker()
                     input_name = session.get_inputs()[0].name
-                tensor, transform = _preprocess(frame, gamma=gamma)
+                tensor, transform = _preprocess(
+                    frame,
+                    gamma=gamma,
+                    input_size=input_size,
+                )
                 if self._uses_directml:
                     with DML_INFERENCE_LOCK:
                         logits = session.run(None, {input_name: tensor})[0]
@@ -175,15 +186,29 @@ def _get_runtime(use_gpu: bool, high_rate: bool) -> _EllSegRuntime:
 
 
 class EllSegPupilDetector:
-    def __init__(self, use_gpu: bool = False, debug_rate: bool = False):
+    def __init__(
+        self,
+        use_gpu: bool = False,
+        debug_rate: bool = False,
+        high_quality: bool = False,
+    ):
         self._use_gpu = bool(use_gpu)
         self._debug_rate = bool(debug_rate)
+        self._high_quality = bool(high_quality)
 
     def set_debug_rate(self, enabled: bool):
         self._debug_rate = bool(enabled)
 
+    def set_high_quality(self, enabled: bool):
+        self._high_quality = bool(enabled)
+
     def submit(self, frame: np.ndarray, gamma: float = 0.8) -> Future | None:
-        return _get_runtime(self._use_gpu, self._debug_rate).submit(frame, gamma)
+        input_size = _HQ_INPUT_SIZE if self._high_quality else _FAST_INPUT_SIZE
+        return _get_runtime(self._use_gpu, self._debug_rate).submit(
+            frame,
+            gamma,
+            input_size=input_size,
+        )
 
 
 def _create_webgpu_session(model_path):
@@ -242,7 +267,9 @@ def _gamma_lut(gamma: float) -> np.ndarray:
 
 
 def _preprocess(
-    frame: np.ndarray, gamma: float = 0.8
+    frame: np.ndarray,
+    gamma: float = 0.8,
+    input_size: tuple[int, int] = _HQ_INPUT_SIZE,
 ) -> tuple[np.ndarray, _FrameTransform]:
     if frame.ndim == 2:
         gray = frame
@@ -261,24 +288,25 @@ def _preprocess(
     if abs(gamma - 1.0) > 1e-3:
         gray = cv2.LUT(gray, _gamma_lut(gamma))
 
-    # Match EllSeg's published inference preprocessing: width-align to 320,
-    # center-pad/crop to 240 high, then normalize each image by its own stats.
-    scale = _INPUT_WIDTH / float(source_width)
+    # Match EllSeg's published inference preprocessing: width-align, center
+    # pad/crop to the selected model height, then normalize per image.
+    input_width, input_height = input_size
+    scale = input_width / float(source_width)
     resized_height = max(1, int(round(source_height * scale)))
     resized = cv2.resize(
         gray,
-        (_INPUT_WIDTH, resized_height),
+        (input_width, resized_height),
         interpolation=cv2.INTER_LANCZOS4,
     )
-    vertical_shift = (_INPUT_HEIGHT - resized_height) / 2.0
-    if resized_height < _INPUT_HEIGHT:
-        padding = _INPUT_HEIGHT - resized_height
+    vertical_shift = (input_height - resized_height) / 2.0
+    if resized_height < input_height:
+        padding = input_height - resized_height
         top = padding // 2
         prepared = np.pad(resized, ((top, padding - top), (0, 0)))
         vertical_shift = float(top)
-    elif resized_height > _INPUT_HEIGHT:
-        top = (resized_height - _INPUT_HEIGHT) // 2
-        prepared = resized[top : top + _INPUT_HEIGHT]
+    elif resized_height > input_height:
+        top = (resized_height - input_height) // 2
+        prepared = resized[top : top + input_height]
         vertical_shift = float(-top)
     else:
         prepared = resized

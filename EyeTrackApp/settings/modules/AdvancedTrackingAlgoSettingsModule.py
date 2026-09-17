@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from localization import tr
+from utils.tooltips import attach_tooltip
 
 
 class AdvancedTrackingAlgoSettingsValidationModel(BaseValidationModel):
@@ -17,6 +18,7 @@ class AdvancedTrackingAlgoSettingsValidationModel(BaseValidationModel):
     gui_thresh_add: int
     gui_pupil_dilation: bool
     gui_ellseg_debug_60hz: bool
+    gui_ellseg_hq_mode: bool
     gui_ellseg_compare_legacy: bool
     gui_ellseg_dilation_min_percent: int
     gui_ellseg_dilation_max_percent: int
@@ -43,6 +45,7 @@ class AdvancedTrackingAlgoSettingsModule(BaseSettingsModule):
         self.gui_HSF_radius_right = f"-HSFRADIUSRIGHT{widget_id}-"
         self.gui_pupil_dilation = f"-EBPD{widget_id}-"
         self.gui_ellseg_debug_60hz = f"-ELLSEGDEBUG60{widget_id}-"
+        self.gui_ellseg_hq_mode = f"-ELLSEGHQ{widget_id}-"
         self.gui_ellseg_compare_legacy = f"-ELLSEGCOMPARE{widget_id}-"
         self.gui_ellseg_dilation_min_percent = f"-ELLSEGMIN{widget_id}-"
         self.gui_ellseg_dilation_max_percent = f"-ELLSEGMAX{widget_id}-"
@@ -115,6 +118,11 @@ class AdvancedTrackingAlgoSettingsModule(BaseSettingsModule):
                 tr("algo_advanced.ellseg_debug_60hz"),
             ),
             (
+                self.gui_ellseg_hq_mode,
+                self.config.gui_ellseg_hq_mode,
+                tr("algo_advanced.ellseg_hq_mode"),
+            ),
+            (
                 self.gui_ellseg_compare_legacy,
                 self.config.gui_ellseg_compare_legacy,
                 tr("algo_advanced.ellseg_compare_legacy"),
@@ -127,9 +135,15 @@ class AdvancedTrackingAlgoSettingsModule(BaseSettingsModule):
             col = idx // rows_per_column
             var = tk.BooleanVar(value=default)
             self.tk_vars[key] = var
-            ttk.Checkbutton(parent, text=label, variable=var).grid(
+            checkbox = ttk.Checkbutton(parent, text=label, variable=var)
+            checkbox.grid(
                 row=row, column=col, sticky="w", padx=8, pady=2
             )
+            if key == self.gui_ellseg_hq_mode:
+                attach_tooltip(
+                    checkbox,
+                    tr("algo_advanced.ellseg_hq_mode_tip"),
+                )
         row = rows_per_column
 
         ttk.Separator(parent, orient="horizontal").grid(

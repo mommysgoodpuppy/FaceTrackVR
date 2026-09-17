@@ -103,18 +103,26 @@ class NextAuxiliaryTracker:
     def __init__(
         self,
         detector=None,
-        rate_hz: float = 1.0,
+        rate_hz: float | None = None,
         history_size: int = 300,
         minimum_samples: int = 4,
         use_gpu: bool = False,
         debug_rate: bool = False,
+        high_quality: bool = False,
         dilation_min: float = 0.0,
         dilation_max: float = 1.0,
         preprocess_gamma: float = 0.8,
     ):
         self._detector = (
-            detector if detector is not None else EllSegPupilDetector(use_gpu=use_gpu, debug_rate=debug_rate)
+            detector if detector is not None else EllSegPupilDetector(
+                use_gpu=use_gpu,
+                debug_rate=debug_rate,
+                high_quality=high_quality,
+            )
         )
+        self._high_quality = bool(high_quality)
+        if rate_hz is None:
+            rate_hz = 1.0 if high_quality else 0.5
         self._normal_rate_hz = max(0.1, float(rate_hz))
         self._debug_rate = bool(debug_rate)
         self._dilation_min = 0.0
@@ -158,6 +166,16 @@ class NextAuxiliaryTracker:
         self._interval = 0.0 if self._debug_rate else 1.0 / self._normal_rate_hz
         if self._asynchronous_detector:
             self._detector.set_debug_rate(self._debug_rate)
+
+    def set_high_quality(self, enabled: bool):
+        """Switch model resolution and normal sampling cadence."""
+        enabled = bool(enabled)
+        self._high_quality = enabled
+        self._normal_rate_hz = 1.0 if enabled else 0.5
+        if not self._debug_rate:
+            self._interval = 1.0 / self._normal_rate_hz
+        if self._asynchronous_detector:
+            self._detector.set_high_quality(enabled)
 
     def set_dilation_output_range(self, minimum: float, maximum: float):
         """Map the selected measured-dilation range onto the 0..1 output."""

@@ -519,6 +519,9 @@ class EyeTrackSettingsConfig(BaseModel):
     # Diagnostic mode: request EllSeg inference at camera rate. The background
     # worker drops stale frames when inference is slower, so NEXT never blocks.
     gui_ellseg_debug_60hz: bool = False
+    # Higher spatial resolution and twice the sampling cadence. The default
+    # fast mode closely matches its dilation geometry at about half the CPU.
+    gui_ellseg_hq_mode: bool = False
     # When a classical tracker is selected, keep EllSeg running as a reference
     # and draw both pupil estimates without replacing the classical OSC output.
     gui_ellseg_compare_legacy: bool = False
