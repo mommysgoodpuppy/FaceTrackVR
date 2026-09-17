@@ -83,8 +83,8 @@ class OpenVRService:
             "is_dashboard_overlay": True,
             "strings": {
                 "en_us": {
-                    "name": "EyeTrackVR",
-                    "description": "EyeTrackVR translates a camera feed into eye/face tracking data.",
+                    "name": "FaceTrackVR",
+                    "description": "FaceTrackVR runs integrated eye and mouth tracking for VRChat.",
                 }
             },
         }
@@ -171,7 +171,7 @@ class OpenVRService:
         )
         self.logger.log(
             INFO,
-            f"{Fore.GREEN}[INFO] Registered EyeTrackVR for SteamVR auto-launch",
+            f"{Fore.GREEN}[INFO] Registered FaceTrackVR for SteamVR auto-launch",
         )
 
     def _unregister(self) -> None:
@@ -261,7 +261,7 @@ class OpenVRService:
                     self.logger.log(
                         INFO,
                         f"{Fore.CYAN}[INFO] SteamVR not running; auto-launch will be "
-                        f"registered the next time EyeTrackVR starts with SteamVR open.",
+                        f"registered the next time FaceTrackVR starts with SteamVR open.",
                     )
                     # Still drop a manifest so a manual SteamVR scan can find it.
                     try:
