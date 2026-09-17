@@ -48,7 +48,10 @@ from __future__ import annotations
 
 import logging
 import os
-import tomllib
+try:
+    import tomllib
+except ImportError:  # Python 3.10 compatibility
+    import tomli as tomllib
 from typing import Any
 
 from utils.misc_utils import resource_path
