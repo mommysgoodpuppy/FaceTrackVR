@@ -26,16 +26,16 @@ Eye tracking and the existing EyeTrackVR features remain available. The fork
 adds an in-progress Linux Vive Facial Tracker capture path, mouth inference,
 the compatible stateful postprocessor, and integrated face-expression output.
 
-The direct Vive Facial Tracker camera backend is currently Linux-only. Other
-EyeTrackVR functionality remains cross-platform to the same extent as the
-upstream project.
+The direct Vive Facial Tracker camera backend supports Linux V4L2 and Windows
+DirectShow. Other EyeTrackVR functionality remains cross-platform to the same
+extent as the upstream project.
 
 ## Experimental builds
 
-Every commit on the `experimental` branch produces a rolling Linux x86_64
-prerelease. The existing `experimental` release is replaced after a successful
-build and focused test run, so its download always represents the newest
-working commit.
+Every commit on the `experimental` branch produces rolling Linux and Windows
+x86_64 prerelease archives. The existing `experimental` release is replaced
+after both builds and their focused tests pass, so its downloads always
+represent the newest working commit.
 
 These builds are intentionally prereleases. Check `SHA256SUMS` before running
 the downloaded archive, and expect settings or behavior to change between
@@ -47,6 +47,16 @@ FTVR does not include a mouth-tracking model. Select a compatible ONNX file in
 the Mouth settings. One can be produced with [lip-tvm2onnx](https://github.com/mommysgoodpuppy/lip-tvm2onnx).
 
 ## Development
+
+On Windows, install the locked dependencies and launch the current checkout
+with:
+
+```powershell
+uv sync
+uv run python EyeTrackApp\eyetrackapp.py
+```
+
+The first command is only needed after cloning or changing dependencies.
 
 On Linux, install a source-backed development launcher with:
 

@@ -67,18 +67,75 @@ jobs:
             tests/test_settings_debounce.py \
             tests/test_version_utils.py
 
-      - name: Create checksum
-        working-directory: ${{ runner.temp }}/release
-        run: sha256sum FaceTrackVR-*.tar.gz > SHA256SUMS
-
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v7
         with:
           name: FaceTrackVR-${{ steps.version.outputs.safe_version }}-linux-x86_64
-          path: |
-            ${{ runner.temp }}/release/FaceTrackVR-*.tar.gz
-            ${{ runner.temp }}/release/SHA256SUMS
+          path: ${{ runner.temp }}/release/FaceTrackVR-*.tar.gz
           if-no-files-found: error
+
+  windows:
+    name: Build Windows x86_64
+    runs-on: windows-2025
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@v10.1.0
+        with:
+          python-version: "3.10.11"
+          enable-cache: true
+
+      - name: Choose build version
+        id: version
+        shell: pwsh
+        run: |
+          $shortSha = $env:GITHUB_SHA.Substring(0, 7)
+          $version = "experimental-$shortSha"
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "safe_version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Build portable application
+        shell: pwsh
+        run: |
+          .\scripts\build_windows.ps1 `
+            -Version "${{ steps.version.outputs.version }}" `
+            -SafeVersion "${{ steps.version.outputs.safe_version }}" `
+            -RepoRoot "$env:GITHUB_WORKSPACE" `
+            -OutDir "$env:RUNNER_TEMP\release"
+
+      - name: Run focused tests
+        env:
+          PYTHONPATH: EyeTrackApp
+        run: >-
+          uv run pytest
+          tests/test_camera_selector.py
+          tests/test_lip_sranipal_parity.py
+          tests/test_settings_debounce.py
+          tests/test_version_utils.py
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: FaceTrackVR-${{ steps.version.outputs.safe_version }}-windows-x86_64
+          path: ${{ runner.temp }}/release/FaceTrackVR-*.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish rolling prerelease
+    needs: [linux, windows]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/release
+          merge-multiple: true
+
+      - name: Create checksums
+        working-directory: ${{ runner.temp }}/release
+        run: sha256sum FaceTrackVR-* > SHA256SUMS
 
       - name: Replace rolling prerelease
         env:
@@ -86,7 +143,7 @@ jobs:
         run: |
           gh release delete experimental --cleanup-tag --yes || true
           gh release create experimental \
-            "$RUNNER_TEMP"/release/FaceTrackVR-*.tar.gz \
+            "$RUNNER_TEMP"/release/FaceTrackVR-* \
             "$RUNNER_TEMP/release/SHA256SUMS" \
             --target "$GITHUB_SHA" \
             --title "FaceTrackVR experimental" \
