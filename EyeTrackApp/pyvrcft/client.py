@@ -186,7 +186,11 @@ class VRCFTClient:
             if new:
                 self._resolve_one_bool(name)
 
-    def update_tracking(self, data: UnifiedTrackingData) -> None:
+    def update_tracking(
+        self,
+        data: UnifiedTrackingData,
+        overrides: dict[str, float] | None = None,
+    ) -> None:
         """Feed one frame of raw tracking data through VRCFT's full
         expression pipeline: computes every v2 base/simple/combined/head
         parameter, the legacy v1 (SRanipal-era) eye parameters for older
@@ -209,6 +213,13 @@ class VRCFTClient:
                 )
             self._last_tracking_at = now
         params, native = compute_outputs(data)
+        # Apply tracker-owned values before exposing the new parameter set to
+        # the sender thread. In particular, EyeTrackVR's pupil dilation is
+        # already normalized; publishing VRCFT's adaptive normalization first
+        # and overwriting it in a second call allowed a one-packet spike to
+        # escape between the two updates.
+        if overrides:
+            params.update(overrides)
         self.set_many(params)
         # Legacy v1 eye params (bare names, no "v2/" prefix) for older avatars.
         self.set_many(compute_legacy_outputs(data), v2=False)

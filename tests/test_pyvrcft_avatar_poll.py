@@ -103,7 +103,26 @@ def test_pyvrcft_forwards_normalized_dilation_without_second_normalization():
         config,
     )
 
-    sender.client.set.assert_called_with("PupilDilation", 0.7)
+    sender.client.update_tracking.assert_called_with(
+        sender.data,
+        overrides={"v2/PupilDilation": 0.7},
+    )
+    sender.client.set.assert_not_called()
     assert sender.data.shapes["EyeWideLeft"] == 0.4
     # NEXT's squeeze-derived value owns this channel.
     assert sender.data.shapes["EyeSquintLeft"] == 0.0
+
+
+def test_pyvrcft_eyebrow_update_preserves_normalized_dilation_override():
+    sender = PyVRCFTSender()
+    sender.client = mock.Mock()
+    sender.data.eye.left.pupil_diameter_mm = 0.6
+    sender.data.eye.right.pupil_diameter_mm = 0.8
+    main_config = mock.Mock(eye_display_id=2)
+
+    sender.output_eyebrow_info(1, 0.25, main_config)
+
+    sender.client.update_tracking.assert_called_once_with(
+        sender.data,
+        overrides={"v2/PupilDilation": 0.7},
+    )

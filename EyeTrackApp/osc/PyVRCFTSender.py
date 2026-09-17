@@ -113,6 +113,23 @@ class PyVRCFTSender:
         # diameter. Good enough for the experimental mode.
         eye.pupil_diameter_mm = float(eye_info.pupil_dilation)
 
+    def _update_tracking(self):
+        """Publish the shared graph while preserving tracker-owned dilation.
+
+        Eye and NEXT-eyebrow messages are separate queue items. Both recompute
+        the full VRCFT expression graph, so every caller must carry the same
+        override or they alternate normalized and already-normalized pupil
+        values on the wire.
+        """
+        normalized_dilation = (
+            self.data.eye.left.pupil_diameter_mm
+            + self.data.eye.right.pupil_diameter_mm
+        ) / 2.0
+        self.client.update_tracking(
+            self.data,
+            overrides={"v2/PupilDilation": normalized_dilation},
+        )
+
     def output_osc_info(self, osc_message: OSCMessage, main_config, config):
         if self.client is None:
             return
@@ -158,17 +175,12 @@ class PyVRCFTSender:
             if name in UNIFIED_EXPRESSION_SET and name not in NEXT_OWNED_SHAPES:
                 self.data.shapes[name] = float(value)
 
-        # Recomputes the full v2 parameter set from the shared frame and queues
-        # only changed values; the port's send thread puts them on the wire.
-        self.client.update_tracking(self.data)
         # EyeTrackVR already reports normalized dilation. VRCFT's input normally
         # contains physical millimetres and its expression pipeline normalizes
-        # those again; bypass that second normalization for this one channel.
-        normalized_dilation = (
-            self.data.eye.left.pupil_diameter_mm
-            + self.data.eye.right.pupil_diameter_mm
-        ) / 2.0
-        self.client.set("PupilDilation", normalized_dilation)
+        # those again; replace that second normalization atomically while the
+        # full parameter set is being updated so the send thread cannot emit
+        # the intermediate adaptive value.
+        self._update_tracking()
 
     def output_eyebrow_info(self, eye_id, brow_val: float, main_config):
         if self.client is None:
@@ -188,4 +200,4 @@ class PyVRCFTSender:
         if is_single or eye_id == EyeId.RIGHT:
             self.data.shapes["BrowInnerUpRight"] = brow_val
             self.data.shapes["BrowOuterUpRight"] = brow_val
-        self.client.update_tracking(self.data)
+        self._update_tracking()
