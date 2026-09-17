@@ -598,7 +598,16 @@ class MouthBounceFilter:
         # Smoothly re-anchor the nonlinear fold so the resting spring equals
         # the exact source target.  A fractional-linear map keeps both caps,
         # has no piecewise kink at equilibrium, and remains monotonic.
-        if target_unit <= 1e-12 or target_unit >= 1.0 - 1e-12:
+        # ``cos`` loses the quadratic difference from 1.0 for sufficiently
+        # small distances from either endpoint.  Check the folded value too:
+        # a valid float32 model output around 1e-9 can otherwise make the
+        # fractional-linear anchor divide by zero and kill LipTracker.
+        if (
+            target_unit <= 1e-12
+            or target_unit >= 1.0 - 1e-12
+            or folded_target <= 0.0
+            or folded_target >= 1.0
+        ):
             visible_unit = folded
         else:
             anchor = (

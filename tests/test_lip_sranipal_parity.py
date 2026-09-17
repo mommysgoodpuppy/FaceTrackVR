@@ -176,6 +176,26 @@ def test_mouth_bounce_fold_is_smooth_at_cap_and_exact_at_equilibrium():
     ) == pytest.approx(0.63)
 
 
+@pytest.mark.parametrize(
+    ("name", "target"),
+    (
+        ("JawOpen", 1e-9),
+        ("JawOpen", 1.0 - 1e-9),
+        ("v2/JawX", -1.0 + 1e-9),
+        ("v2/JawX", 1.0 - 1e-9),
+    ),
+)
+def test_mouth_bounce_handles_targets_that_fold_to_float_endpoints(name, target):
+    bounce = MouthBounceFilter()
+    bounce({name: 0.5}, now=1.0, mix=10.0)
+
+    result = bounce({name: target}, now=1.0 + 1.0 / 60.0, mix=10.0)
+
+    low, high = bounce._bounds(name)
+    assert np.isfinite(result[name])
+    assert low <= result[name] <= high
+
+
 def test_mouth_bounce_preserves_source_overflow():
     bounce = MouthBounceFilter()
     result = bounce({"MouthUpperUpLeft": -0.3}, now=1.0, mix=100.0)
