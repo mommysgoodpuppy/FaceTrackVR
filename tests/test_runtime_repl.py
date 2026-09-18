@@ -1,4 +1,17 @@
-from scripts.runtime_repl import RuntimeReplServer, request
+import json
+
+from scripts.runtime_repl import RuntimeReplServer, enabled_from_config, request
+
+
+def test_runtime_repl_persistent_config_and_environment_override(tmp_path, monkeypatch):
+    config_path = tmp_path / "runtime_repl.json"
+    config_path.write_text(json.dumps({"enabled": True}), encoding="utf-8")
+    assert enabled_from_config(str(config_path))
+
+    monkeypatch.setenv("FACETRACKVR_RUNTIME_REPL", "0")
+    assert not enabled_from_config(str(config_path))
+    monkeypatch.setenv("FACETRACKVR_RUNTIME_REPL", "yes")
+    assert enabled_from_config(str(config_path))
 
 
 def test_runtime_repl_authenticates_and_keeps_a_persistent_namespace():

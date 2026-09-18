@@ -68,6 +68,21 @@ This creates a project-local uv environment and makes both the application-menu
 entry and `facetrackvr` command run the current checkout directly. Source edits
 therefore take effect on the next launch without rebuilding a release archive.
 
+Source builds also support an authenticated, loopback-only runtime REPL for
+live diagnostics. Put the following in
+`~/.config/EyeTrackVR/runtime_repl.json` to enable it persistently for the
+current user:
+
+```json
+{"enabled": true}
+```
+
+It is never available in packaged builds. `FACETRACKVR_RUNTIME_REPL=0` disables
+it for one launch; setting the variable to `1` enables it without the file.
+The randomly generated per-launch token and selected port are written to the
+application log. When idle, the REPL only adds a sleeping server thread and a
+loopback listening socket.
+
 The inherited Poetry project metadata remains available in
 [`pyproject.toml`](pyproject.toml).
 

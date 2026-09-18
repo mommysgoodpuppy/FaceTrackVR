@@ -1,8 +1,10 @@
 """Opt-in, source-only runtime REPL for inspecting a live FaceTrackVR process.
 
-The application loads this file dynamically only when
-``FACETRACKVR_RUNTIME_REPL=1``. Keeping it under scripts/ and out of the normal
-import graph means PyInstaller does not bundle the arbitrary-code endpoint.
+The application loads this file dynamically only in a source checkout. Enable
+it persistently with ``~/.config/EyeTrackVR/runtime_repl.json`` or per launch
+with ``FACETRACKVR_RUNTIME_REPL=1``. Keeping it under scripts/ and out of the
+normal import graph means PyInstaller does not bundle the arbitrary-code
+endpoint.
 
 Requests and responses are one JSON object per line. The small command-line
 client at the bottom is the intended way to query the running process.
@@ -24,6 +26,30 @@ from typing import Any
 
 _MAX_REQUEST_BYTES = 256 * 1024
 _MAX_RESULT_CHARS = 1024 * 1024
+
+
+def default_config_path() -> str:
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(base, "EyeTrackVR", "runtime_repl.json")
+
+
+def enabled_from_config(path: str | None = None) -> bool:
+    """Return whether this source checkout should expose its local REPL.
+
+    The environment variable is an explicit per-launch override: common true
+    spellings enable it and every other provided value disables it. Without an
+    override, the separate development config persists independently of the
+    application's frequently rewritten tracking settings.
+    """
+    override = os.environ.get("FACETRACKVR_RUNTIME_REPL")
+    if override is not None:
+        return override.strip().lower() in {"1", "true", "yes", "on"}
+    try:
+        with open(path or default_config_path(), encoding="utf-8") as config_file:
+            config = json.load(config_file)
+    except (OSError, json.JSONDecodeError):
+        return False
+    return config.get("enabled") is True
 
 
 class _LoopbackServer(socketserver.TCPServer):

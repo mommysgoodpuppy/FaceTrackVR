@@ -97,16 +97,15 @@ _pywinstyles_mod = None
 
 
 def _start_runtime_repl(namespace: dict):
-    """Start the source-only runtime REPL when explicitly enabled.
+    """Start the source-only runtime REPL when its development config enables it.
 
     The module is loaded by path so PyInstaller does not discover and bundle
-    it. This endpoint executes arbitrary Python and must remain a local,
-    per-launch development facility rather than a persisted app setting.
+    it. This endpoint executes arbitrary Python and remains loopback-only,
+    authenticated, and unavailable in packaged builds.
     """
-    if os.environ.get("FACETRACKVR_RUNTIME_REPL") != "1":
-        return None
     if getattr(sys, "frozen", False):
-        logger.warning("Runtime REPL is unavailable in packaged builds")
+        if os.environ.get("FACETRACKVR_RUNTIME_REPL"):
+            logger.warning("Runtime REPL is unavailable in packaged builds")
         return None
 
     repl_path = os.path.join(
@@ -119,9 +118,15 @@ def _start_runtime_repl(namespace: dict):
         raise RuntimeError(f"Could not load runtime REPL from {repl_path}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    port = int(os.environ.get("FACETRACKVR_RUNTIME_REPL_PORT", "5678"))
+    if not module.enabled_from_config():
+        return None
     token = os.environ.get("FACETRACKVR_RUNTIME_REPL_TOKEN") or None
-    server = module.RuntimeReplServer(namespace, port=port, token=token).start()
+    try:
+        port = int(os.environ.get("FACETRACKVR_RUNTIME_REPL_PORT", "5678"))
+        server = module.RuntimeReplServer(namespace, port=port, token=token).start()
+    except (OSError, ValueError):
+        logger.exception("Development runtime REPL could not start")
+        return None
     server.namespace["repl"] = server
     logger.warning(
         "Development runtime REPL listening on 127.0.0.1:%d (token: %s)",
