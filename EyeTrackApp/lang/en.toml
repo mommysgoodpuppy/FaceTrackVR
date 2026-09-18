@@ -132,6 +132,9 @@ mode_single_right = "Mode: Single-eye (right)"
 tracking_right = "Tracking right eye only."
 mode_none = "Mode: No active camera"
 enter_source = "Enter at least one camera source."
+eye_watchdog_recovering = "Eye tracking stalled; recovering the eye pipeline..."
+eye_watchdog_failed = "Eye recovery could not restart every worker; restart FaceTrackVR manually."
+eye_watchdog_circuit_open = "Eye camera keeps failing; automatic recovery paused. Reconnect tracking to retry."
 
 # ---------------------------------------------------------------------------
 # Per-eye camera widget (tracking page)

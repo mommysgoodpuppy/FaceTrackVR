@@ -32,6 +32,7 @@ import serial
 import serial.tools.list_ports
 import threading
 import time
+import zlib
 from config import EyeTrackCameraConfig, EyeTrackSettingsConfig
 from enum import Enum
 import sys
@@ -92,6 +93,10 @@ _UVC_REQUESTED_FPS = 120.0
 _NETWORK_RECONNECT_BACKOFF_MIN = 0.5
 _NETWORK_RECONNECT_BACKOFF_MAX = 5.0
 _CAPTURE_BACKPRESSURE_LOG_INTERVAL = 5.0
+# A healthy eye image has substantial IR contrast. Requiring only one grayscale
+# level of standard deviation keeps the detector conservative while still
+# identifying live UVC streams that return blank/near-flat frames with noise.
+_CAPTURE_USABLE_CONTRAST_STDDEV = 1.0
 # If no JPEG EOI arrives within this many buffered bytes, assume a desync and
 # discard the buffer. Prevents unbounded memory growth when the firmware
 # sends malformed or truncated frames (cable noise, firmware hang).
@@ -181,6 +186,13 @@ class Camera:
         self._retry_log_backoff: float = 0.0
         self._capture_backpressure_events = 0
         self._capture_backpressure_window_started = time.monotonic()
+        # Independent producer/content heartbeats let the supervisor
+        # distinguish a dead capture loop from a UVC device that remains open
+        # while returning the exact same frozen image forever.
+        self.capture_last_frame_mono = 0.0
+        self.capture_last_content_change_mono = 0.0
+        self.capture_last_usable_contrast_mono = 0.0
+        self._capture_last_fingerprint: int | None = None
         # Network (HTTP) reconnect backoff: monotonic deadline before the next reopen
         # attempt, and the current (exponentially growing) delay used to set it.
         self._network_reconnect_backoff: float = 0.0
@@ -798,6 +810,25 @@ class Camera:
             except queue.Full:
                 pass
 
+    @staticmethod
+    def _frame_diagnostics(image) -> tuple[int | None, bool]:
+        """Return a sparse fingerprint and conservative usable-contrast flag."""
+        try:
+            frame = np.asarray(image)
+            if frame.size == 0 or frame.ndim < 2:
+                return None, False
+            row_step = max(1, frame.shape[0] // 16)
+            col_step = max(1, frame.shape[1] // 16)
+            sample = np.ascontiguousarray(frame[::row_step, ::col_step])
+            return (
+                zlib.crc32(sample),
+                float(np.std(sample)) >= _CAPTURE_USABLE_CONTRAST_STDDEV,
+            )
+        except Exception:
+            # Liveness diagnostics must never make an otherwise valid capture
+            # frame fail to reach tracking.
+            return None, True
+
     def push_image_to_queue(self, image, frame_number, fps):
         qsize = self.camera_output_outgoing.qsize()
         if qsize > 1:
@@ -815,6 +846,13 @@ class Camera:
                 self._capture_backpressure_events = 0
                 self._capture_backpressure_window_started = now
         ts = time.perf_counter()
+        fingerprint, usable_contrast = self._frame_diagnostics(image)
+        if fingerprint is not None and fingerprint != self._capture_last_fingerprint:
+            self.capture_last_content_change_mono = ts
+        if usable_contrast:
+            self.capture_last_usable_contrast_mono = ts
+        self._capture_last_fingerprint = fingerprint
+        self.capture_last_frame_mono = ts
         self._put_frame_drop_oldest(
             self.camera_output_outgoing, (image, frame_number, fps, ts)
         )

@@ -51,6 +51,7 @@ from camera_enum import (
 )
 from config import EyeTrackConfig
 from eye import EyeId
+from eye_watchdog import EyePipelineWatchdog
 from localization import init_localization, tr
 from settings.VRCFTModuleSettings import VRCFTSettingsWidget
 from settings.LipSettings import LipSettingsWidget
@@ -466,6 +467,9 @@ def main():
             self._last_camera_tracking_key = None
             self._timer_high_res = False
             self._nav_teardown_seq = 0
+            self._eye_watchdog = EyePipelineWatchdog()
+            self._eye_watchdog_next_check = 0.0
+            self._eye_watchdog_shutdown = False
             # Maps the friendly display label shown in the camera dropdown to
             # the actual capture_source string we store/resolve (e.g.
             # ``"OBS Virtual Camera"`` → ``"uvc:OBS Virtual Camera@\\?\..."``).
@@ -1119,7 +1123,7 @@ def main():
                     set_timer_resolution(False)
                     self._timer_high_res = False
 
-        def apply_camera_inputs(self):
+        def apply_camera_inputs(self, *, watchdog_recovery: bool = False):
             left_source = self._normalize_camera_input(self.left_camera_var.get())
             if self.mode_var.get() == "bigscreen":
                 right_source = left_source
@@ -1138,6 +1142,10 @@ def main():
                 eyes[1].stop()
                 eyes[0].stop()
                 self._last_camera_tracking_key = new_key
+            if not watchdog_recovery:
+                # A user-requested reconnect/source/topology change is a fresh
+                # pipeline and explicitly closes an open circuit breaker.
+                self._eye_watchdog.reset()
 
             # UVC index 0 is falsy but valid; check for explicit "set" rather than truthiness.
             has_left = left_source is not None and left_source != ""
@@ -1196,6 +1204,115 @@ def main():
 
             config.save()
             self._sync_timer_resolution()
+
+        def _eye_watchdog_sample(self):
+            active_eyes = [eye for eye in eyes if eye.started()]
+            if not active_eyes:
+                return False, 0.0, 0.0, 0.0, 0.0, False
+
+            cameras = {}
+            for eye in active_eyes:
+                camera = eye._effective_camera()
+                cameras[id(camera)] = camera
+            capture_last_frame = min(
+                camera.capture_last_frame_mono for camera in cameras.values()
+            )
+            capture_last_change = min(
+                camera.capture_last_content_change_mono for camera in cameras.values()
+            )
+            capture_last_usable_contrast = min(
+                camera.capture_last_usable_contrast_mono
+                for camera in cameras.values()
+            )
+            output_last_frame = min(
+                eye.ransac.last_output_mono for eye in active_eyes
+            )
+            workers_alive = all(
+                eye.tracking_thread is not None and eye.tracking_thread.is_alive()
+                for eye in active_eyes
+            ) and all(
+                any(
+                    eye.camera is camera
+                    and eye.camera_thread is not None
+                    and eye.camera_thread.is_alive()
+                    for eye in active_eyes
+                )
+                for camera in cameras.values()
+            )
+            return (
+                True,
+                capture_last_frame,
+                capture_last_change,
+                capture_last_usable_contrast,
+                output_last_frame,
+                workers_alive,
+            )
+
+        def _start_eye_watchdog_recovery(self, reason: str) -> None:
+            logger.warning(
+                "Eye watchdog detected %s; soft-restarting only the eye pipeline",
+                reason,
+            )
+            self.status_var.set(tr("status.eye_watchdog_recovering"))
+
+            def recover():
+                tracked_threads = [
+                    thread
+                    for eye in eyes
+                    for thread in (eye.tracking_thread, eye.camera_thread)
+                    if thread is not None
+                ]
+                # Signal every worker before joining any of them, matching the
+                # bounded application-shutdown ordering.
+                for eye in eyes:
+                    eye.request_stop()
+                deadline = time.monotonic() + 5.0
+                for eye in eyes:
+                    eye.stop(
+                        join_timeout=max(0.0, deadline - time.monotonic()),
+                        warn_if_alive=True,
+                    )
+                stopped = not any(thread.is_alive() for thread in tracked_threads)
+                if self._eye_watchdog_shutdown:
+                    return
+                try:
+                    self.root.after(
+                        0,
+                        lambda: self._finish_eye_watchdog_recovery(reason, stopped),
+                    )
+                except tk.TclError:
+                    pass
+
+            threading.Thread(
+                target=recover,
+                daemon=True,
+                name="EyeWatchdogRecovery",
+            ).start()
+
+        def _finish_eye_watchdog_recovery(self, reason: str, stopped: bool) -> None:
+            if self._eye_watchdog_shutdown:
+                return
+            if not stopped:
+                logger.error(
+                    "Eye watchdog could not stop all workers after %s; "
+                    "automatic recovery is disarmed until the pipeline is healthy",
+                    reason,
+                )
+                self.status_var.set(tr("status.eye_watchdog_failed"))
+                self._eye_watchdog.finish_recovery(time.perf_counter())
+                return
+            self.apply_camera_inputs(watchdog_recovery=True)
+            self._eye_watchdog.finish_recovery(time.perf_counter())
+            configured_eyes = []
+            if config.right_eye.capture_source not in (None, ""):
+                configured_eyes.append(eyes[0])
+            if config.left_eye.capture_source not in (None, ""):
+                configured_eyes.append(eyes[1])
+            if configured_eyes and all(eye.started() for eye in configured_eyes):
+                logger.info("Eye watchdog soft restart completed after %s", reason)
+            else:
+                logger.error("Eye watchdog soft restart did not restore all configured eyes")
+                self.status_var.set(tr("status.eye_watchdog_failed"))
 
         def show_page(self, page_name: str):
             """Switch tabs. Heavy work (camera thread joins, config apply) is deferred so the UI can redraw first."""
@@ -1563,6 +1680,37 @@ def main():
                 self.shutdown()
                 return
 
+            watchdog_now = time.perf_counter()
+            if watchdog_now >= self._eye_watchdog_next_check:
+                self._eye_watchdog_next_check = watchdog_now + 0.5
+                (
+                    watchdog_active,
+                    capture_last_frame,
+                    capture_last_change,
+                    capture_last_usable_contrast,
+                    output_last_frame,
+                    workers_alive,
+                ) = self._eye_watchdog_sample()
+                reason = self._eye_watchdog.observe(
+                    now=watchdog_now,
+                    active=watchdog_active,
+                    capture_last_frame=capture_last_frame,
+                    capture_last_change=capture_last_change,
+                    capture_last_usable_contrast=capture_last_usable_contrast,
+                    output_last_frame=output_last_frame,
+                    workers_alive=workers_alive,
+                )
+                if reason is not None:
+                    if self._eye_watchdog.circuit_open:
+                        logger.error(
+                            "Eye watchdog circuit breaker opened after repeated "
+                            "failures; not restarting again (%s)",
+                            reason,
+                        )
+                        self.status_var.set(tr("status.eye_watchdog_circuit_open"))
+                    else:
+                        self._start_eye_watchdog_recovery(reason)
+
             try:
                 has_focus = self.root.focus_displayof() is not None
             except KeyError:
@@ -1626,6 +1774,7 @@ def main():
 
         def shutdown(self):
             logger.info("Exiting EyeTrackApp")
+            self._eye_watchdog_shutdown = True
             # Signal every eye before joining any of them.  A dead HTTP camera
             # can leave FFmpeg inside its native open timeout, and the old
             # sequential five-second joins made Tk look hung (up to ten seconds

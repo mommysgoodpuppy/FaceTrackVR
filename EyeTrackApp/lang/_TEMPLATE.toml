@@ -181,6 +181,12 @@ tracking_right = ""
 mode_none = ""
 # EN: "Enter at least one camera source."
 enter_source = ""
+# EN: "Eye tracking stalled; recovering the eye pipeline..."
+eye_watchdog_recovering = ""
+# EN: "Eye recovery could not restart every worker; restart FaceTrackVR manually."
+eye_watchdog_failed = ""
+# EN: "Eye camera keeps failing; automatic recovery paused. Reconnect tracking to retry."
+eye_watchdog_circuit_open = ""
 
 [camera]
 # EN: "Camera Address"

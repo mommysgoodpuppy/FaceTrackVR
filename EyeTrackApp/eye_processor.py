@@ -171,6 +171,11 @@ class EyeProcessor:
         self.current_frame_number = None
         self.current_fps = None
         self.current_capture_ts: float | None = None
+        # Consumer heartbeats used by the eye-only watchdog.  Input advances
+        # as soon as a frame leaves the capture queue; output advances only
+        # after all selected algorithms and OSC data have completed.
+        self.last_input_mono: float = 0.0
+        self.last_output_mono: float = 0.0
         # Tracking-output metrics. Both are time-windowed (last N seconds) so
         # the readout is stable and matches what the eye can perceive, not a
         # noisy single-frame number. output_fps = iterations / window; latency
@@ -1531,6 +1536,7 @@ class EyeProcessor:
                     except queue.Empty:
                         pass
             self._last_tracking_pull_mono = time.perf_counter()
+            self.last_input_mono = self._last_tracking_pull_mono
 
             raw_frame = self.current_image
             self.current_raw_frame = raw_frame
@@ -1563,3 +1569,4 @@ class EyeProcessor:
                 self.ALGOSELECT()
                 self.UPDATE()
                 self._record_tracking_metrics()
+                self.last_output_mono = time.perf_counter()

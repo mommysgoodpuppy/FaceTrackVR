@@ -14,6 +14,10 @@ def test_capture_backpressure_warning_is_aggregated(monkeypatch, caplog):
     capture._extra_output_queues = []
     capture._capture_backpressure_events = 0
     capture._capture_backpressure_window_started = 0.0
+    capture.capture_last_frame_mono = 0.0
+    capture.capture_last_content_change_mono = 0.0
+    capture.capture_last_usable_contrast_mono = 0.0
+    capture._capture_last_fingerprint = None
     for item in (object(), object()):
         capture.camera_output_outgoing.put(item)
 
@@ -29,3 +33,35 @@ def test_capture_backpressure_warning_is_aggregated(monkeypatch, caplog):
     capture.push_image_to_queue(frame, 3, 90.0)
     assert "3 events in 5.1s" in caplog.text
     assert caplog.text.count("Capture queue backpressure") == 1
+
+
+def test_capture_liveness_distinguishes_new_and_repeated_images(monkeypatch):
+    capture = object.__new__(Camera)
+    capture.serial_connection = None
+    capture.camera_output_outgoing = Queue(maxsize=20)
+    capture._extra_output_queues = []
+    capture._capture_backpressure_events = 0
+    capture._capture_backpressure_window_started = 0.0
+    capture.capture_last_frame_mono = 0.0
+    capture.capture_last_content_change_mono = 0.0
+    capture.capture_last_usable_contrast_mono = 0.0
+    capture._capture_last_fingerprint = None
+    times = iter((1.0, 2.0, 3.0))
+    monkeypatch.setattr(camera.time, "perf_counter", lambda: next(times))
+
+    first = np.zeros((32, 32, 3), dtype=np.uint8)
+    changed = first.copy()
+    changed[16, 16] = 255
+    capture.push_image_to_queue(first, 1, 90.0)
+    assert capture.capture_last_frame_mono == 1.0
+    assert capture.capture_last_content_change_mono == 1.0
+    assert capture.capture_last_usable_contrast_mono == 0.0
+
+    capture.push_image_to_queue(first.copy(), 2, 90.0)
+    assert capture.capture_last_frame_mono == 2.0
+    assert capture.capture_last_content_change_mono == 1.0
+
+    capture.push_image_to_queue(changed, 3, 90.0)
+    assert capture.capture_last_frame_mono == 3.0
+    assert capture.capture_last_content_change_mono == 3.0
+    assert capture.capture_last_usable_contrast_mono == 3.0

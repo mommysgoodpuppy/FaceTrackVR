@@ -1190,9 +1190,15 @@ class CameraWidget:
         if not self.cancellation_event.is_set():
             return
         self.cancellation_event.clear()
+        self.ransac.last_input_mono = 0.0
+        self.ransac.last_output_mono = 0.0
         self.tracking_thread = Thread(target=self.ransac.run)
         self.tracking_thread.start()
         if run_camera_thread:
+            self.camera.capture_last_frame_mono = 0.0
+            self.camera.capture_last_content_change_mono = 0.0
+            self.camera.capture_last_usable_contrast_mono = 0.0
+            self.camera._capture_last_fingerprint = None
             self.camera_thread = Thread(target=self.camera.run)
             self.camera_thread.start()
         else:
