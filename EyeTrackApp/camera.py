@@ -38,6 +38,7 @@ from enum import Enum
 import sys
 from camera_enum import is_uvc_named_source, parse_uvc_named_source, format_uvc_named_source, resolve_uvc_address_to_index, invalidate_uvc_camera_cache, claim_uvc_address, release_uvc_claim
 from camera_behaviors import stream_controller_for
+import libuvc_capture
 from PIL import Image
 from io import BytesIO
 
@@ -86,6 +87,12 @@ _FAST_CAPTURE_MIN_INTERVAL = 1.0 / _FAST_CAPTURE_MAX_FPS
 # otherwise commonly selects uncompressed YUY2, which can be limited by USB
 # bandwidth even when OBS/Discord can run the same camera smoothly as MJPEG.
 _UVC_REQUESTED_FPS = 120.0
+# How long the libuvc capture loop blocks waiting for the next frame before it
+# re-checks cancellation/source changes. The BSB2E streams at 90 fps, so this
+# only fully elapses once the stream has stalled. Blocking (rather than
+# polling) keeps the loop off the GIL, which the libuvc callback thread and the
+# tracking thread both need.
+_LIBUVC_FRAME_WAIT = 0.05
 # Reconnect backoff for network sources (seconds). Each failed reopen blocks the
 # capture thread in native cv2 for up to the open-timeout, so retries are spaced with
 # an exponential backoff (min..max) instead of hammering a dead host every loop tick,
@@ -157,6 +164,12 @@ class Camera:
         self.cv2_camera: "cv2.VideoCapture" = None
         self._uvc_stream_controller = None
         self._file_video_source_cache: tuple[object, bool] | None = None
+        # Userspace libuvc backend for Bigscreen Bigeye (BSB2E) cameras, whose
+        # V4L2 path is broken on Linux. None for every other source.
+        self._libuvc_stream = None
+        # (capture_source, resolved /dev path or None) memo for BSB2E detection,
+        # which reads sysfs and must not run on every loop tick.
+        self._libuvc_source_cache: tuple[object, str | None] | None = None
 
         self.serial_connection = None
         self.frame_number = 0
@@ -228,7 +241,20 @@ class Camera:
         self._file_video_source_cache = (key, v)
         return v
 
+    def _release_libuvc_stream(self) -> None:
+        """Tear down the userspace libuvc backend, if one is active."""
+        stream = self._libuvc_stream
+        self._libuvc_stream = None
+        if stream is not None:
+            try:
+                stream.close()
+            except Exception as exc:
+                logger.warning("libuvc shutdown failed: %s", exc)
+
     def _release_cv2_camera(self) -> None:
+        # Releases every non-serial capture backend, so a transition between
+        # libuvc and cv2 (or away from either) can't leak the previous one.
+        self._release_libuvc_stream()
         cam = self.cv2_camera
         if cam is not None:
             try:
@@ -246,6 +272,61 @@ class Camera:
         if self._claimed_uvc_address is not None:
             release_uvc_claim(id(self))
             self._claimed_uvc_address = None
+
+    def _libuvc_path_for(self, capture_source) -> str | None:
+        """Return the /dev node when ``capture_source`` is a BSB2E camera whose
+        frames must come through libuvc, else None.
+
+        The sysfs probe behind this is memoized per source string: the capture
+        loop asks every tick (~10 Hz) and the answer only changes when the
+        configured source does. libuvc itself is only loaded once a BSB2E
+        device is actually selected, so machines without it pay nothing.
+        """
+        key = capture_source
+        cache = self._libuvc_source_cache
+        if cache is not None and cache[0] == key:
+            return cache[1]
+        path = libuvc_capture.bsb2e_video_path(capture_source)
+        if path is not None and not libuvc_capture.libuvc_available():
+            logger.warning(
+                "BSB camera %s needs the libuvc userspace backend, which could "
+                "not be loaded; falling back to V4L2 (known broken for this "
+                "device). See the Linux install notes for the libuvc package.",
+                capture_source,
+            )
+            path = None
+        self._libuvc_source_cache = (key, path)
+        return path
+
+    def _open_libuvc_stream(self, source, path: str) -> None:
+        """Open ``path``'s BSB2E camera through libuvc and start streaming.
+
+        On failure the camera is left DISCONNECTED so the run loop retries on
+        its next tick, matching how the cv2 backend signals a failed open.
+        """
+        stream = None
+        try:
+            stream = libuvc_capture.LibuvcCapture()
+            stream.open()
+            stream.start()
+            # Don't declare success until a frame actually arrives: the stream
+            # opens even when the device is mid-reboot and never streams.
+            if not libuvc_capture.wait_for_first_frame(stream, 1.5):
+                raise libuvc_capture.LibuvcError("no frames within 1.5 s of start")
+        except Exception as exc:
+            logger.warning(
+                "BSB2E libuvc capture failed to start for %s: %s", source, exc
+            )
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception as close_exc:
+                    logger.warning("libuvc cleanup after failure failed: %s", close_exc)
+            self._libuvc_stream = None
+            self.camera_status = CameraState.DISCONNECTED
+            return
+        self._libuvc_stream = stream
+        logger.info("BSB2E libuvc capture started for %s", source)
 
     def _close_serial_connection(self) -> None:
         conn = self.serial_connection
@@ -383,12 +464,43 @@ class Camera:
                         self.start_serial_connection(new_source)
                         should_push = False
                 else:
-                    # Switching to cv2 (local UVC / HTTP MJPEG / file) from any other backend.
+                    # Switching to a non-serial backend (cv2 for local UVC /
+                    # HTTP MJPEG / files, or libuvc for BSB2E cameras).
                     if source_changed:
                         self._close_serial_connection()
                         self._reset_frame_stats()
                         self._reset_network_reconnect_backoff()
-                    if (
+                    # BSB2E (Bigscreen Bigeye) on Linux speaks a UVC variant the
+                    # kernel uvcvideo driver cannot stream: VIDIOC_REQBUFS fails
+                    # with "Invalid argument" ("no support for memory mapping"
+                    # in OpenCV's log), so V4L2 capture never starts. Route those
+                    # devices through userspace libuvc instead; see
+                    # libuvc_capture.py.
+                    _libuvc_path = self._libuvc_path_for(new_source)
+                    if _libuvc_path is not None:
+                        if (
+                            source_changed
+                            or self.camera_status == CameraState.DISCONNECTED
+                            or self._libuvc_stream is None
+                        ):
+                            _now_log = time.monotonic()
+                            if source_changed or _now_log >= self._retry_log_backoff:
+                                logger.info(self.error_message.format(new_source))
+                                self._retry_log_backoff = _now_log + 5.0
+                            # Give camera firmware time to settle before retrying.
+                            if self.cancellation_event.wait(WAIT_TIME):
+                                return
+                            # Release any stale handle before reopening so the
+                            # transition between backends can't leak one.
+                            self._release_cv2_camera()
+                            self._file_video_source_cache = None
+                            self.current_capture_source = new_source
+                            self._open_libuvc_stream(new_source, _libuvc_path)
+                            if self.camera_status == CameraState.DISCONNECTED:
+                                if self.cancellation_event.wait(WAIT_TIME):
+                                    return
+                                continue
+                    elif (
                         self.cv2_camera is None
                         or not self.cv2_camera.isOpened()
                         or self.camera_status == CameraState.DISCONNECTED
@@ -581,12 +693,64 @@ class Camera:
                 addr = str(self.current_capture_source)
                 if is_serial_capture_source(addr):
                     self.get_serial_camera_picture(True)
+                elif self._libuvc_stream is not None:
+                    self.get_libuvc_camera_picture(True)
                 else:
                     self.get_cv2_camera_picture(True)
                 if self.camera_status != CameraState.DISCONNECTED:
                     self.camera_status = CameraState.CONNECTED
                     self._retry_log_backoff = 0.0
                     self._reset_network_reconnect_backoff()
+
+    @staticmethod
+    def _downscale_wide_frame(image):
+        """Cap the frame width at 680 px, preserving aspect ratio.
+
+        Shared by every non-serial backend so the same camera produces the same
+        frame size whichever one carries it (the BSB2E's 800x400 becomes
+        680x340, still two square eye halves).
+        """
+        height, width = image.shape[:2]
+        if int(width) > 680:
+            aspect_ratio = float(width) / float(height)
+            new_height = int(680 / aspect_ratio)
+            image = cv2.resize(image, (680, new_height))
+        return image
+
+    def get_libuvc_camera_picture(self, should_push):
+        """Publish the next frame from the libuvc backend, if one arrives.
+
+        ``read`` blocks inside libuvc (with the GIL released) until a frame is
+        ready, so the capture loop paces itself off the camera instead of
+        spinning, and the timeout just bounds how long shutdown/source changes
+        can go unnoticed.
+        """
+        stream = self._libuvc_stream
+        if stream is None:
+            self.camera_status = CameraState.DISCONNECTED
+            return
+        try:
+            jpeg = stream.read(_LIBUVC_FRAME_WAIT)
+            if jpeg is None:
+                return
+            image = cv2.imdecode(
+                np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR
+            )
+            if image is None:
+                logger.warning("BSB2E libuvc: dropped corrupted JPEG frame")
+                return
+            image = self._downscale_wide_frame(image)
+            self.frame_number += 1
+            # len(jpeg) is the compressed payload pulled off the USB pipe, so the
+            # Mbps readout reflects the link instead of decoded pixel bytes (the
+            # same convention the serial backend uses).
+            self._update_frame_rate(len(jpeg))
+            if should_push:
+                self.push_image_to_queue(image, self.frame_number, self.fps)
+        except Exception as exc:
+            logger.warning("BSB2E libuvc capture problem; reconnecting: %s", exc)
+            self.camera_status = CameraState.DISCONNECTED
+            self._release_libuvc_stream()
 
     def get_cv2_camera_picture(self, should_push):
         if self.cv2_camera is None or not self.cv2_camera.isOpened():
@@ -616,11 +780,7 @@ class Camera:
                     self.cv2_camera.set(cv2.CAP_PROP_POS_FRAMES, 0)
                 raise RuntimeError("Problem while getting frame")
             frame_bytes = image.nbytes
-            height, width = image.shape[:2]
-            if int(width) > 680:
-                aspect_ratio = float(width) / float(height)
-                new_height = int(680 / aspect_ratio)
-                image = cv2.resize(image, (680, new_height))
+            image = self._downscale_wide_frame(image)
             if should_push and throttle_source:
                 self._last_cv_cap_frame_time = time.time()
             if is_http or not is_file_video:
