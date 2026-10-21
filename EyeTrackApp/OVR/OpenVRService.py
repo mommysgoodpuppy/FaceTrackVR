@@ -51,9 +51,14 @@ def _launch_target():
                    which meant a from-source install registered ``python.exe``
                    with no script and SteamVR launched a do-nothing interpreter.
     """
-    binary = os.path.abspath(sys.executable)
     if _is_frozen():
-        return binary, ""
+        return os.path.abspath(sys.executable), ""
+    if sys.platform.startswith("linux"):
+        # SteamVR 2.18 rejects absolute binary_path_linux values in external
+        # manifests.  Paths are resolved relative to app.vrmanifest, so use
+        # the source-tree launcher kept next to this checkout instead.
+        return os.path.join("..", "scripts", "linux", "run_source.sh"), ""
+    binary = os.path.abspath(sys.executable)
     entry = os.path.abspath(sys.argv[0]) if sys.argv and sys.argv[0] else ""
     return binary, entry
 
