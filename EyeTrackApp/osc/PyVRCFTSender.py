@@ -76,6 +76,7 @@ class PyVRCFTSender:
             send_host=str(config.gui_osc_address),
             send_port=int(config.gui_osc_port),
             recv_port=recv_port,
+            native_face=bool(config.gui_vrc_native_face),
         )
         self.data._vrcft_client = self.client
         self.data._lip_immediate_sender = self.client.send_immediate

@@ -1,7 +1,7 @@
 """Minimal OSC 1.0 codec (messages + bundles), stdlib only.
 
 Supports the types VRChat/VRCFT actually use on the wire:
-float ('f'), int ('i'), string ('s'), bool ('T'/'F').
+float ('f'), int ('i'), string ('s'), bool ('T'/'F'), blob ('b').
 """
 
 from __future__ import annotations
@@ -36,6 +36,9 @@ def encode_message(address: str, args) -> bytes:
         elif isinstance(arg, str):
             tags += "s"
             payload += _osc_string(arg)
+        elif isinstance(arg, (bytes, bytearray)):
+            tags += "b"
+            payload += struct.pack(">i", len(arg)) + _pad4(bytes(arg))
         else:
             raise TypeError(f"unsupported OSC arg type: {type(arg)!r}")
     return _osc_string(address) + _osc_string(tags) + payload
@@ -122,6 +125,13 @@ def _parse_into(data: bytes, out: list) -> None:
                 v = True
             elif tag == "F":
                 v = False
+            elif tag == "b":
+                (size,) = struct.unpack_from(">i", data, offset)
+                offset += 4
+                v = data[offset : offset + size]
+                if len(v) != size:
+                    break
+                offset += size + (-size % 4)
             elif tag == "d":
                 (v,) = struct.unpack_from(">d", data, offset)
                 offset += 8

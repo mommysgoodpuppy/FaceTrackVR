@@ -32,6 +32,7 @@ from .expressions import (
     native_eyelids_relevant,
     native_gaze_relevant,
 )
+from . import native_face as _native_face
 from .params import DEFAULT_PREFIX, FloatSlot, OutputSlot, resolve_slots, suffix_regex
 
 logger = logging.getLogger("pyvrcft")
@@ -71,6 +72,7 @@ class VRCFTClient:
         use_oscquery: bool = True,
         force_relevant: bool = False,
         bool_threshold: float = 0.5,
+        native_face: bool = True,
     ):
         self.send_host = send_host
         self.send_port = send_port
@@ -79,6 +81,9 @@ class VRCFTClient:
         self.use_oscquery = use_oscquery
         self.force_relevant = force_relevant
         self.bool_threshold = bool_threshold
+        # Send VRChat's native /tracking/face/v1 blob to avatars whose OSC
+        # config declares no VRCFT parameters (see update_native_face).
+        self.native_face = native_face
 
         # Callbacks (assign your own)
         self.on_avatar_change = None  # fn(AvatarInfo)
@@ -227,11 +232,33 @@ class VRCFTClient:
             self.send_direct("/tracking/eye/LeftRightPitchYaw", *native["/tracking/eye/LeftRightPitchYaw"])
         if self._native_lids_ok:
             self.send_direct("/tracking/eye/EyesClosedAmount", *native["/tracking/eye/EyesClosedAmount"])
+        self.update_native_face(data, params.get("v2/PupilDilation", 0.5))
         if data.eye_tracking_active is not None:
             self.set_bool("EyeTrackingActive", data.eye_tracking_active)
         if data.expression_tracking_active is not None:
             self.set_bool("ExpressionTrackingActive", data.expression_tracking_active)
             self.set_bool("LipTrackingActive", data.expression_tracking_active)
+
+    def native_face_relevant(self) -> bool:
+        """Whether VRChat's native face tracking should be driven.
+
+        Avatars that declare VRCFT parameters (v2 or legacy v1) in their OSC
+        config keep receiving those, like VRCFT; everything else, including
+        an avatar that has not been resolved yet, gets the native blob. VRChat
+        ignores it on avatars without native face tracking set up."""
+        if not self.native_face:
+            return False
+        with self._lock:
+            return not any(self._slots.values())
+
+    def update_native_face(self, data: UnifiedTrackingData, pupil: float = 0.5) -> None:
+        """Queue the native /tracking/face/v1 payload when it is relevant.
+
+        ``pupil`` is the normalized (0..1, 0.5 neutral) pupil value."""
+        if self.native_face_relevant():
+            self.send_direct(
+                _native_face.ADDRESS, _native_face.encode_native_face(data, pupil)
+            )
 
     def send_direct(self, address: str, *values) -> None:
         """Queue a message to an absolute OSC address, always sent (deduped).

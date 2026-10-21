@@ -74,6 +74,7 @@ class OSCManager:
             int(s.gui_VRCFTModulePort),
             bool(s.gui_use_module),
             bool(s.gui_pyvrcft),
+            bool(s.gui_vrc_native_face),
             str(s.gui_osc_address).strip(),
             int(s.gui_osc_receiver_port),
         )
@@ -124,6 +125,7 @@ class OSCManager:
             "gui_VRCFTModuleIPAddress",
             "gui_use_module",
             "gui_pyvrcft",
+            "gui_vrc_native_face",
             "gui_osc_address",
             "gui_osc_receiver_port",
         }

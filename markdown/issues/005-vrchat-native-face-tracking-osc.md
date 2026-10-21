@@ -1,6 +1,6 @@
 # 005: VRChat native face tracking OSC (`/tracking/face/v1`)
 
-Status: open · Priority: normal
+Status: implemented, untested in game · Priority: normal
 
 VRChat beta adds native face tracking over OSC:
 <https://vrc-beta-docs.netlify.app/avatars/face-tracking/osc>.
@@ -21,15 +21,35 @@ VRChat beta adds native face tracking over OSC:
   VRChat syncs it natively, so no per-key synced avatar parameters are needed.
 - The page does **not** say how an app detects avatar support.
 
-## Plan
+## Implementation
 
-- Add a packer in pyVRCFT: `UnifiedTrackingData` to 102 bytes, with gaze
-  split into the look-in/out/up/down keys and openness turned into
-  EyeClosed.
-- Send it from the pyVRCFT send loop, like the existing native
-  `/tracking/eye/*` endpoints.
-- Choose dynamically per avatar. If the avatar's OSC config declares FT
-  params (v2 or v1), keep sending those. Otherwise send native face. Mirror
-  the existing `native_gaze_relevant` logic.
-- Find out how VRChat exposes native-FT avatar support, for example in the
-  OSCQuery tree or the avatar JSON, before relying on "no FT params" alone.
+- `pyvrcft/native_face.py` packs `UnifiedTrackingData` into the 102-byte
+  payload. Non-eye keys are UE shape weights. Gaze becomes the eight
+  EyeLook keys (x right, y up; looking right is right-eye out and left-eye
+  in). EyeClosed is `1 - openness`. The normalized pupil (0.5 = neutral)
+  splits into EyeDilation above 0.5 and EyeConstrict below it.
+- The pyVRCFT OSC codec now encodes and parses blobs (`b`).
+- `VRCFTClient` sends it from the send loop as a direct, deduplicated
+  message, but only when the avatar's OSC config resolved **no** VRCFT
+  parameters (v2 or legacy v1). Avatars with FT parameters keep getting
+  those, so they are never double-driven. An unresolved avatar gets native
+  face, the same rule as the native `/tracking/eye/*` endpoints.
+- Setting `gui_vrc_native_face` (default on) adds a "Native face" checkbox
+  next to the OSC output modes. Only the pyVRCFT mode uses it.
+- The lip tracker's standalone client (used with non-pyVRCFT output modes)
+  never sends native face. The payload must include the eye keys, and that
+  client has no eye data.
+- Tests: `tests/test_pyvrcft_native_face.py`.
+
+## Open questions
+
+- Verify in the VRChat beta with an avatar that has "Use All Tracking Keys"
+  enabled and no VRCFT parameters. Check gaze direction and scale (is full
+  normalized gaze the right magnitude for EyeLook = 1?), lids and pupil.
+- The docs give no way to detect native face tracking support. If VRChat
+  exposes one later (OSCQuery or the avatar JSON), use it instead of the "no
+  FT parameters" rule.
+- With direct and new-smooth lip modes, native face updates at the eye-frame
+  rate, not on every mouth frame.
+- The docs give no send rate. The send loop runs at about 100 Hz and only
+  resends when the payload changes.

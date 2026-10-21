@@ -11,6 +11,6 @@ the file; close an issue by changing its status, not by deleting it.
 | 002 | [Full Resonite support](002-resonite-support.md) | in-progress | normal |
 | 003 | [Proper VRCFaceTracking support](003-vrcft-proper-support.md) | open | normal |
 | 004 | [Tongue physics limits look robotic](004-tongue-physics-robotic.md) | open | low |
-| 005 | [VRChat native face tracking OSC (`/tracking/face/v1`)](005-vrchat-native-face-tracking-osc.md) | open | normal |
+| 005 | [VRChat native face tracking OSC (`/tracking/face/v1`)](005-vrchat-native-face-tracking-osc.md) | implemented, untested in game | normal |
 | 006 | [Stale legacy OSC sender tests](006-stale-osc-sender-tests.md) | open | low |
 | 007 | [NEXT Ultra unified model](007-next-ultra-deferred.md) | deferred | low |

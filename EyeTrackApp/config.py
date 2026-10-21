@@ -515,6 +515,9 @@ class EyeTrackSettingsConfig(BaseModel):
     # embedded PY-VRCFT port (osc/PyVRCFTSender.py), replacing VRCFT. Auto-adapts
     # to v2 / legacy v1 / native-eye avatars from one tracking frame.
     gui_pyvrcft: bool = True
+    # pyVRCFT only: send VRChat's native face tracking (/tracking/face/v1) to
+    # avatars that declare no VRCFT parameters in their OSC config.
+    gui_vrc_native_face: bool = True
     gui_pupil_dilation: bool = False
     # Diagnostic mode: request EllSeg inference at camera rate. The background
     # worker drops stale frames when inference is slower, so NEXT never blocks.

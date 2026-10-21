@@ -1012,6 +1012,9 @@ class LipTracker:
                 send_host=str(self.config.gui_osc_address),
                 send_port=int(self.config.gui_osc_port),
                 recv_port=0,  # OSCQuery-only; never fight over the receiver
+                # Native face carries the eye keys too, which this mouth-only
+                # client cannot fill; leave it to the pyVRCFT output mode.
+                native_face=False,
             )
             self._own_client_data = UnifiedTrackingData()
             self._own_client_data.expression_tracking_active = True

@@ -15,6 +15,7 @@ class OSCValidationModel(BaseValidationModel):
     gui_osc_vrcft_v1: bool
     gui_osc_vrcft_v2: bool
     gui_pyvrcft: bool
+    gui_vrc_native_face: bool
     gui_use_module: bool
 
     @model_validator(mode="after")
@@ -46,6 +47,7 @@ class OSCSettingsModule(BaseSettingsModule):
         self.gui_osc_vrcft_v1 = f"-OSCVRCFTV1{widget_id}-"
         self.gui_osc_vrcft_v2 = f"-OSCVRCFTV2{widget_id}-"
         self.gui_pyvrcft = f"-OSCPYVRCFT{widget_id}-"
+        self.gui_vrc_native_face = f"-OSCNATIVEFACE{widget_id}-"
         self.gui_use_module = f"-OSCUSEMODULE{widget_id}-"
 
     def get_values_map(self) -> dict:
@@ -94,6 +96,14 @@ class OSCSettingsModule(BaseSettingsModule):
         )
         pyvrcft_rb.pack(side="left", padx=4)
         attach_tooltip(pyvrcft_rb, tr("osc.mode_pyvrcft_tip"))
+
+        native_face_var = tk.BooleanVar(value=bool(self.config.gui_vrc_native_face))
+        self.tk_vars[self.gui_vrc_native_face] = native_face_var
+        native_face_cb = ttk.Checkbutton(
+            osc_bar, text=tr("osc.native_face"), variable=native_face_var
+        )
+        native_face_cb.pack(side="left", padx=(12, 4))
+        attach_tooltip(native_face_cb, tr("osc.native_face_tip"))
 
         ros_var = tk.BooleanVar(value=bool(self.config.gui_ROSC))
         self.tk_vars[self.gui_ROSC] = ros_var
