@@ -193,7 +193,7 @@ class VRCFTClient:
     ) -> None:
         """Feed one frame of raw tracking data through VRCFT's full
         expression pipeline: computes every v2 base/simple/combined/head
-        parameter, the legacy v1 (SRanipal-era) eye parameters for older
+        parameter, the legacy v1 (SRanipal-era) eye and lip parameters for older
         avatars, the native /tracking/eye/* endpoints (only when the avatar
         has no FT eye params, like VRCFT), and the *TrackingActive status
         bools.
@@ -221,7 +221,7 @@ class VRCFTClient:
         if overrides:
             params.update(overrides)
         self.set_many(params)
-        # Legacy v1 eye params (bare names, no "v2/" prefix) for older avatars.
+        # Legacy v1 eye and lip params (bare names, no "v2/" prefix) for older avatars.
         self.set_many(compute_legacy_outputs(data), v2=False)
         if self._native_gaze_ok:
             self.send_direct("/tracking/eye/LeftRightPitchYaw", *native["/tracking/eye/LeftRightPitchYaw"])

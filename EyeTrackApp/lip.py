@@ -842,6 +842,17 @@ def get_active_tracker() -> "LipTracker | None":
 
 
 
+def _with_legacy_lip(improved_v2: dict | None, shapes) -> dict | None:
+    """Direct-mode packet: the compact v2 values plus VRCFT's v1 (SRanipal)
+    lip set, so legacy avatars are not left without mouth data. Keys are
+    already fully qualified, so send with ``v2=False``."""
+    if not improved_v2:
+        return None
+    from pyvrcft.expressions import compute_legacy_lip_outputs
+
+    return {**compute_legacy_lip_outputs(shapes), **improved_v2}
+
+
 class LipTracker:
     """Self-contained Vive Facial Tracker runtime. start()/stop() only."""
 
@@ -1347,16 +1358,20 @@ class LipTracker:
                     shapes[name] = value
                 shared._lip_v2_overrides = improved_v2 or {}
                 shared.expression_tracking_active = True
+                direct = _with_legacy_lip(improved_v2, shapes)
             # Improved mode is genuinely direct: do not wait for an eye frame
             # to recompute the graph or for the periodic 100 Hz sender tick.
             immediate = getattr(shared, "_lip_immediate_sender", None)
-            if improved_v2 and callable(immediate):
-                immediate(improved_v2)
+            if direct and callable(immediate):
+                immediate(direct, v2=False)
         elif self._own_client is not None:
             for name, value in unified.items():
                 self._own_client_data.shapes[name] = value
             self._own_client_data._lip_v2_overrides = improved_v2 or {}
             if improved_v2:
-                self._own_client.send_immediate(improved_v2)
+                self._own_client.send_immediate(
+                    _with_legacy_lip(improved_v2, self._own_client_data.shapes),
+                    v2=False,
+                )
             else:
                 self._own_client.update_tracking(self._own_client_data)

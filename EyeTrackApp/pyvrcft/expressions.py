@@ -439,7 +439,8 @@ def _native_pitch_yaw(eye: SingleEyeData, data: "UnifiedTrackingData"):
 # avatars tuned against EyeTrackVR behave identically under this port.
 
 def compute_legacy_outputs(data: UnifiedTrackingData) -> dict:
-    """Compute VRCFT v1 (legacy) eye parameters for one frame.
+    """Compute VRCFT v1 (legacy) eye and lip parameters for one frame
+    (UnifiedTracking.AllParameters_v1).
 
     Returns {"<Name>": float} with bare (non-"v2/") logical names; feed to
     VRCFTClient.set_many(..., v2=False)."""
@@ -456,7 +457,8 @@ def compute_legacy_outputs(data: UnifiedTrackingData) -> dict:
     squint_left = w["EyeSquintLeft"]
     squint_right = w["EyeSquintRight"]
 
-    return {
+    out = compute_legacy_lip_outputs(w)
+    out.update({
         # --- Gaze (x right, y up, [-1, 1])
         "EyesX": combined.gaze_x,
         "EyesY": combined.gaze_y,
@@ -486,7 +488,208 @@ def compute_legacy_outputs(data: UnifiedTrackingData) -> dict:
         # --- Pupil (normalized 0-1)
         "EyesDilation": combined.pupil_diameter_mm,
         "EyesPupilDiameter": combined.pupil_diameter_mm,
+    })
+    return out
+
+
+# --------------------------------------------------------------------------
+# VRCFT v1 (legacy / SRanipal-era) lip parameters
+#
+# Ported 1:1 from:
+#   VRCFaceTracking.Core/Params/Expressions/Legacy/Lip/UnifiedSRanMapper.cs
+#   VRCFaceTracking.Core/Params/Expressions/Legacy/Lip/LipShapeMerger.cs
+#   VRCFaceTracking.Core/Params/Expressions/Legacy/Lip/LipShapeConversion.cs
+#
+# VRCFT emits every SRanipal shape under its bare name plus the merged
+# "optimized" set. Without these, SRanipal-era avatars receive no mouth data.
+
+def compute_sranipal_lip_shapes(w: ShapeWeights) -> dict:
+    """Unified Expressions -> SRanipal LipShape_v2 weights (UnifiedSRanMapper)."""
+    simple = compute_simple(w)
+    smile_right = max(simple["MouthSmileRight"], w["MouthDimpleRight"])
+    smile_left = max(simple["MouthSmileLeft"], w["MouthDimpleLeft"])
+    frown = (w["MouthFrownRight"] + w["MouthFrownLeft"]) / 2.0
+
+    def lip_open(up_down: str, side: str, pucker_funnel: str) -> float:
+        return max(
+            0.0,
+            w[up_down + side]
+            + (1.0 - w["LipPucker" + pucker_funnel + side])
+            * w["LipFunnel" + pucker_funnel + side],
+        )
+
+    return {
+        "JawRight": w["JawRight"],
+        "JawLeft": w["JawLeft"],
+        "JawForward": w["JawForward"],
+        "JawOpen": min(1.0, max(0.0, w["JawOpen"] - w["MouthClosed"])),
+        "MouthApeShape": w["MouthClosed"],
+        "MouthUpperRight": w["MouthUpperRight"],
+        "MouthUpperLeft": w["MouthUpperLeft"],
+        "MouthLowerRight": w["MouthLowerRight"],
+        "MouthLowerLeft": w["MouthLowerLeft"],
+        "MouthUpperOverturn": (w["LipFunnelUpperLeft"] + w["LipFunnelUpperRight"]) / 2.0,
+        "MouthLowerOverturn": (w["LipFunnelLowerLeft"] + w["LipFunnelLowerRight"]) / 2.0,
+        "MouthPout": (
+            w["LipPuckerUpperLeft"] + w["LipPuckerUpperRight"]
+            + w["LipPuckerLowerLeft"] + w["LipPuckerLowerRight"]
+        ) / 4.0,
+        "MouthSmileRight": smile_right,
+        "MouthSmileLeft": smile_left,
+        "MouthSadRight": max(0.0, max(frown, w["MouthStretchRight"]) - smile_right),
+        "MouthSadLeft": max(0.0, max(frown, w["MouthStretchLeft"]) - smile_left),
+        "CheekPuffRight": w["CheekPuffRight"],
+        "CheekPuffLeft": w["CheekPuffLeft"],
+        "CheekSuck": (w["CheekSuckLeft"] + w["CheekSuckRight"]) / 2.0,
+        "MouthUpperUpRight": lip_open("MouthUpperUp", "Right", "Upper"),
+        "MouthUpperUpLeft": lip_open("MouthUpperUp", "Left", "Upper"),
+        "MouthLowerDownRight": lip_open("MouthLowerDown", "Right", "Lower"),
+        "MouthLowerDownLeft": lip_open("MouthLowerDown", "Left", "Lower"),
+        "MouthUpperInside": max(0.0, (w["LipSuckUpperLeft"] + w["LipSuckUpperRight"]) / 2.0),
+        "MouthLowerInside": max(0.0, (w["LipSuckLowerLeft"] + w["LipSuckLowerRight"]) / 2.0),
+        "MouthLowerOverlay": w["MouthRaiserLower"],
+        "TongueLongStep1": min(1.0, w["TongueOut"] * 2.0),
+        "TongueLongStep2": min(1.0, max(0.0, w["TongueOut"] * 2.0 - 1.0)),
+        "TongueDown": w["TongueDown"],
+        "TongueUp": w["TongueUp"],
+        "TongueRight": w["TongueRight"],
+        "TongueLeft": w["TongueLeft"],
+        "TongueRoll": w["TongueRoll"],
+        "TongueUpLeftMorph": 0.0,
+        "TongueUpRightMorph": 0.0,
+        "TongueDownLeftMorph": 0.0,
+        "TongueDownRightMorph": 0.0,
     }
+
+
+# LipShapeMerger.MergedShapes: name -> (kind, positive shapes, negative shapes).
+#   "pn"    PositiveNegativeShape:          pos - neg
+#   "steps" PositiveNegativeShape(steps):   pos + neg - 1
+#   "avg"   PositiveNegativeAveragedShape:  mean(pos) - mean(neg)
+#   "max"   ... with useMax:                max(pos) - max(neg)
+_UPPER_UP = ("MouthUpperUpLeft", "MouthUpperUpRight")
+_LOWER_DOWN = ("MouthLowerDownLeft", "MouthLowerDownRight")
+_SMILE = ("MouthSmileLeft", "MouthSmileRight")
+_PUFF_RL = ("CheekPuffRight", "CheekPuffLeft")
+_OVERTURN = ("MouthUpperOverturn", "MouthLowerOverturn")
+_INSIDE = ("MouthUpperInside", "MouthLowerInside")
+
+
+def _side_variants(prefix, base, suffixes):
+    return {prefix + suffix: ("pn", (base,), (shape,)) for suffix, shape in suffixes}
+
+
+SRANIPAL_MERGED_SHAPES = {
+    "JawX": ("pn", ("JawRight",), ("JawLeft",)),
+    "MouthUpper": ("pn", ("MouthUpperRight",), ("MouthUpperLeft",)),
+    "MouthLower": ("pn", ("MouthLowerRight",), ("MouthLowerLeft",)),
+    "MouthX": ("max", ("MouthUpperRight", "MouthLowerRight"), ("MouthUpperLeft", "MouthLowerLeft")),
+    "SmileSadRight": ("pn", ("MouthSmileRight",), ("MouthSadRight",)),
+    "SmileSadLeft": ("pn", ("MouthSmileLeft",), ("MouthSadLeft",)),
+    "SmileSad": ("avg", _SMILE, ("MouthSadLeft", "MouthSadRight")),
+    "TongueY": ("pn", ("TongueUp",), ("TongueDown",)),
+    "TongueX": ("pn", ("TongueRight",), ("TongueLeft",)),
+    "PuffSuckRight": ("pn", ("CheekPuffRight",), ("CheekSuck",)),
+    "PuffSuckLeft": ("pn", ("CheekPuffLeft",), ("CheekSuck",)),
+    "PuffSuck": ("max", ("CheekPuffLeft", "CheekPuffRight"), ("CheekSuck",)),
+    "JawOpenApe": ("pn", ("JawOpen",), ("MouthApeShape",)),
+    "JawOpenPuff": ("avg", ("JawOpen",), ("CheekPuffLeft", "CheekPuffRight")),
+    "JawOpenPuffRight": ("pn", ("JawOpen",), ("CheekPuffRight",)),
+    "JawOpenPuffLeft": ("pn", ("JawOpen",), ("CheekPuffLeft",)),
+    "JawOpenSuck": ("pn", ("JawOpen",), ("CheekSuck",)),
+    "JawOpenForward": ("pn", ("JawOpen",), ("JawForward",)),
+    "JawOpenOverlay": ("pn", ("JawOpen",), ("MouthLowerOverlay",)),
+    **_side_variants("MouthUpperUpRight", "MouthUpperUpRight", (
+        ("UpperInside", "MouthUpperInside"), ("PuffRight", "CheekPuffRight"),
+        ("Ape", "MouthApeShape"), ("Pout", "MouthPout"),
+        ("Overlay", "MouthLowerOverlay"), ("Suck", "CheekSuck"),
+    )),
+    **_side_variants("MouthUpperUpLeft", "MouthUpperUpLeft", (
+        ("UpperInside", "MouthUpperInside"), ("PuffLeft", "CheekPuffLeft"),
+        ("Ape", "MouthApeShape"), ("Pout", "MouthPout"),
+        ("Overlay", "MouthLowerOverlay"), ("Suck", "CheekSuck"),
+    )),
+    "MouthUpperUpUpperInside": ("avg", _UPPER_UP, ("MouthUpperInside",)),
+    "MouthUpperUpInside": ("max", _UPPER_UP, _INSIDE),
+    "MouthUpperUpPuff": ("avg", _UPPER_UP, ("CheekPuffLeft", "CheekPuffRight")),
+    "MouthUpperUpPuffLeft": ("avg", _UPPER_UP, ("CheekPuffLeft",)),
+    "MouthUpperUpPuffRight": ("avg", _UPPER_UP, ("CheekPuffRight",)),
+    "MouthUpperUpApe": ("avg", _UPPER_UP, ("MouthApeShape",)),
+    "MouthUpperUpPout": ("avg", _UPPER_UP, ("MouthPout",)),
+    "MouthUpperUpOverlay": ("avg", _UPPER_UP, ("MouthLowerOverlay",)),
+    "MouthUpperUpSuck": ("avg", _UPPER_UP, ("CheekSuck",)),
+    **_side_variants("MouthLowerDownRight", "MouthLowerDownRight", (
+        ("LowerInside", "MouthLowerInside"), ("PuffRight", "CheekPuffRight"),
+        ("Ape", "MouthApeShape"), ("Pout", "MouthPout"),
+        ("Overlay", "MouthLowerOverlay"), ("Suck", "CheekSuck"),
+    )),
+    **_side_variants("MouthLowerDownLeft", "MouthLowerDownLeft", (
+        ("LowerInside", "MouthLowerInside"), ("PuffLeft", "CheekPuffLeft"),
+        ("Ape", "MouthApeShape"), ("Pout", "MouthPout"),
+        ("Overlay", "MouthLowerOverlay"), ("Suck", "CheekSuck"),
+    )),
+    "MouthLowerDownLowerInside": ("avg", _LOWER_DOWN, ("MouthLowerInside",)),
+    "MouthLowerDownInside": ("max", _LOWER_DOWN, _INSIDE),
+    "MouthLowerDownPuff": ("avg", _LOWER_DOWN, ("CheekPuffLeft", "CheekPuffRight")),
+    "MouthLowerDownPuffLeft": ("avg", _LOWER_DOWN, ("CheekPuffLeft",)),
+    "MouthLowerDownPuffRight": ("avg", _LOWER_DOWN, ("CheekPuffRight",)),
+    "MouthLowerDownApe": ("avg", _LOWER_DOWN, ("MouthApeShape",)),
+    "MouthLowerDownPout": ("avg", _LOWER_DOWN, ("MouthPout",)),
+    "MouthLowerDownOverlay": ("avg", _LOWER_DOWN, ("MouthLowerOverlay",)),
+    "MouthLowerDownSuck": ("avg", _LOWER_DOWN, ("CheekSuck",)),
+    "MouthUpperInsideOverturn": ("pn", ("MouthUpperInside",), ("MouthUpperOverturn",)),
+    "MouthLowerInsideOverturn": ("pn", ("MouthLowerInside",), ("MouthLowerOverturn",)),
+    **{
+        f"Smile{side}{suffix}": entry
+        for side in ("Right", "Left")
+        for suffix, entry in (
+            ("UpperOverturn", ("pn", ("MouthSmile" + side,), ("MouthUpperOverturn",))),
+            ("LowerOverturn", ("pn", ("MouthSmile" + side,), ("MouthLowerOverturn",))),
+            ("Overturn", ("avg", ("MouthSmile" + side,), _OVERTURN)),
+            ("Ape", ("pn", ("MouthSmile" + side,), ("MouthApeShape",))),
+            ("Overlay", ("pn", ("MouthSmile" + side,), ("MouthLowerOverlay",))),
+            ("Pout", ("pn", ("MouthSmile" + side,), ("MouthPout",))),
+        )
+    },
+    "SmileUpperOverturn": ("avg", _SMILE, ("MouthUpperOverturn",)),
+    "SmileLowerOverturn": ("avg", _SMILE, ("MouthLowerOverturn",)),
+    "SmileOverturn": ("avg", _SMILE, _OVERTURN),
+    "SmileApe": ("avg", _SMILE, ("MouthApeShape",)),
+    "SmileOverlay": ("avg", _SMILE, ("MouthLowerOverlay",)),
+    "SmilePout": ("avg", _SMILE, ("MouthPout",)),
+    **{
+        f"Puff{side}{suffix}": entry
+        for side in ("Right", "Left")
+        for suffix, entry in (
+            ("UpperOverturn", ("pn", ("CheekPuff" + side,), ("MouthUpperOverturn",))),
+            ("LowerOverturn", ("pn", ("CheekPuff" + side,), ("MouthLowerOverturn",))),
+            ("Overturn", ("max", ("CheekPuff" + side,), _OVERTURN)),
+        )
+    },
+    "PuffUpperOverturn": ("avg", _PUFF_RL, ("MouthUpperOverturn",)),
+    "PuffLowerOverturn": ("avg", _PUFF_RL, ("MouthLowerOverturn",)),
+    "PuffOverturn": ("max", _PUFF_RL, _OVERTURN),
+    "TongueSteps": ("steps", ("TongueLongStep1",), ("TongueLongStep2",)),
+}
+
+
+def compute_legacy_lip_outputs(w: ShapeWeights) -> dict:
+    """Compute VRCFT v1 (SRanipal) lip parameters for one frame: every
+    LipShape_v2 shape plus LipShapeMerger's merged shapes, by bare name."""
+    sr = compute_sranipal_lip_shapes(w)
+    out = dict(sr)
+    for name, (kind, positive, negative) in SRANIPAL_MERGED_SHAPES.items():
+        pos = [sr[s] for s in positive]
+        neg = [sr[s] for s in negative]
+        if kind == "pn":
+            out[name] = pos[0] - neg[0]
+        elif kind == "steps":
+            out[name] = pos[0] + neg[0] - 1.0
+        elif kind == "avg":
+            out[name] = sum(pos) / len(pos) - sum(neg) / len(neg)
+        else:
+            out[name] = max(pos) - max(neg)
+    return out
 
 
 # --------------------------------------------------------------------------
