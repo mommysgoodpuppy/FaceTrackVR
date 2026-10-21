@@ -1,21 +1,31 @@
 # 002: Full Resonite support
 
-Status: in-progress · Priority: normal
+Status: implemented, untested in game · Priority: normal
 
-Uncommitted work-in-progress is in the `FaceTrackVR-resonite` worktree
-(`/home/ellie/git/FaceTrackVR-resonite`, branch `FaceTrackVR-resonite`):
-`osc/BabbleSender.py` drives Resonite's built-in Babble driver over
-Baballonia's OSC protocol, with settings UI and `tests/test_babble_sender.py`.
+The Babble-protocol output from the `FaceTrackVR-resonite` worktree has been
+ported onto `experimental` by hand, not rebased. The worktree's uncommitted
+diff also deleted unrelated lines (`gui_pupil_dilation`, the English
+`osc.receive` strings, a `_TEMPLATE.toml` comment and a section header), and
+those deletions were left out. The worktree is untouched and now superseded;
+remove it once nothing else is needed from it.
 
-## Notes
+## What landed
 
-- The worktree's `config.py` diff **removes `gui_pupil_dilation`**, and the
-  comment line about v2/v1/native auto-adapting. This looks accidental;
-  restore both before committing.
-- The worktree branch is based on `1ce4e7d`, so rebase it onto current
-  `experimental` before continuing.
-- Define "full": eyes and mouth through Babble, per-eye openness and widen,
-  and the shapes Babble collapses (funnel, pucker, roll). Squint and lower lid
-  are not supported by Babble on either side (Resonite-Issues #6821).
-- Document the `-ForceBabble` launch argument and the receive port in the
-  README.
+- `osc/BabbleSender.py` drives Resonite's built-in Babble driver with
+  Baballonia's OSC protocol: one float message per datagram, sent on every
+  eye or mouth frame. The address table was checked against Baballonia's
+  `BabbleOSC.cs` and `BabbleExpressions.cs`.
+- "Babble (Resonite)" output mode, with the Babble address and port (default
+  `127.0.0.1:8888`) in the advanced OSC settings.
+- The lip tracker publishes into the sender's shared frame and flushes it
+  after each mouth frame (`_lip_frame_sender`), in every lip output mode.
+- Tests: `tests/test_babble_sender.py`.
+
+## Still to do
+
+- Verify in Resonite. If the driver doesn't start, launch with `-ForceBabble`.
+- Babble supports neither squint nor the lower lid, on either side
+  (Resonite-Issues #6821). Brows have no Babble address.
+- Shapes Babble collapses (funnel, pucker, mouth left/right, roll) lose their
+  per-side detail.
+- Document the setup in the README.

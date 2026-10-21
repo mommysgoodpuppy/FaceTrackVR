@@ -1367,6 +1367,11 @@ class LipTracker:
             immediate = getattr(shared, "_lip_immediate_sender", None)
             if direct and callable(immediate):
                 immediate(direct, v2=False)
+            # Senders without their own send loop (Babble) flush the whole
+            # frame on every mouth frame, in every lip output mode.
+            flush = getattr(shared, "_lip_frame_sender", None)
+            if callable(flush):
+                flush()
         elif self._own_client is not None:
             for name, value in unified.items():
                 self._own_client_data.shapes[name] = value

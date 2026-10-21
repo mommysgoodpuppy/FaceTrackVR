@@ -11,6 +11,8 @@ class AdvancedOSCValidationModel(BaseValidationModel):
     gui_osc_receiver_port: int
     gui_osc_recenter_address: str
     gui_osc_recalibrate_address: str
+    gui_babble_address: str
+    gui_babble_port: int
 
 
 class AdvancedOSCSettingsModule(BaseSettingsModule):
@@ -22,6 +24,8 @@ class AdvancedOSCSettingsModule(BaseSettingsModule):
         self.gui_osc_receiver_port = f"OSCRECEIVERPORT{widget_id}-"
         self.gui_osc_recenter_address = f"OSCRECENTERADDRESS{widget_id}-"
         self.gui_osc_recalibrate_address = f"OSCRECALIBRATEADDRESS{widget_id}-"
+        self.gui_babble_address = f"BABBLEADDRESS{widget_id}-"
+        self.gui_babble_port = f"BABBLEPORT{widget_id}-"
 
     def build(self, parent):
         paired_fields = [
@@ -51,6 +55,10 @@ class AdvancedOSCSettingsModule(BaseSettingsModule):
                     28,
                 ),
                 None,
+            ),
+            (
+                (tr("osc_advanced.babble_address"), self.gui_babble_address, self.config.gui_babble_address, 18),
+                (tr("osc_advanced.babble_port"), self.gui_babble_port, self.config.gui_babble_port, 10),
             ),
         ]
         for row, (left, right) in enumerate(paired_fields):

@@ -16,6 +16,7 @@ class OSCValidationModel(BaseValidationModel):
     gui_osc_vrcft_v2: bool
     gui_pyvrcft: bool
     gui_vrc_native_face: bool
+    gui_babble: bool
     gui_use_module: bool
 
     @model_validator(mode="after")
@@ -31,6 +32,7 @@ class OSCValidationModel(BaseValidationModel):
             self.gui_osc_vrcft_v1,
             self.gui_osc_vrcft_v2,
             self.gui_pyvrcft,
+            self.gui_babble,
         ]
         if sum(bool(x) for x in exclusive) > 1:
             raise ValueError(tr("osc.err_output_mode_conflict"))
@@ -48,6 +50,7 @@ class OSCSettingsModule(BaseSettingsModule):
         self.gui_osc_vrcft_v2 = f"-OSCVRCFTV2{widget_id}-"
         self.gui_pyvrcft = f"-OSCPYVRCFT{widget_id}-"
         self.gui_vrc_native_face = f"-OSCNATIVEFACE{widget_id}-"
+        self.gui_babble = f"-OSCBABBLE{widget_id}-"
         self.gui_use_module = f"-OSCUSEMODULE{widget_id}-"
 
     def get_values_map(self) -> dict:
@@ -62,10 +65,13 @@ class OSCSettingsModule(BaseSettingsModule):
         values[self.gui_osc_vrcft_v1] = mode == "vrcft_v1"
         values[self.gui_osc_vrcft_v2] = mode == "vrcft_v2"
         values[self.gui_pyvrcft] = mode == "pyvrcft"
+        values[self.gui_babble] = mode == "babble"
         return values
 
     def build(self, parent):
-        if self.config.gui_pyvrcft:
+        if self.config.gui_babble:
+            osc_out_initial = "babble"
+        elif self.config.gui_pyvrcft:
             osc_out_initial = "pyvrcft"
         elif self.config.gui_vrc_native:
             osc_out_initial = "native"
@@ -96,6 +102,11 @@ class OSCSettingsModule(BaseSettingsModule):
         )
         pyvrcft_rb.pack(side="left", padx=4)
         attach_tooltip(pyvrcft_rb, tr("osc.mode_pyvrcft_tip"))
+        babble_rb = ttk.Radiobutton(
+            osc_bar, text=tr("osc.mode_babble"), variable=mode_var, value="babble"
+        )
+        babble_rb.pack(side="left", padx=4)
+        attach_tooltip(babble_rb, tr("osc.mode_babble_tip"))
 
         native_face_var = tk.BooleanVar(value=bool(self.config.gui_vrc_native_face))
         self.tk_vars[self.gui_vrc_native_face] = native_face_var

@@ -37,6 +37,7 @@ from osc.OSCMessage import OSCMessage, OSCMessageType
 from osc.VRCFTModuleMessenger import VRCFTModuleSender
 from osc.VRChatOSCSender import VRChatOSCSender
 from osc.PyVRCFTSender import PyVRCFTSender
+from osc.BabbleSender import BabbleSender
 import queue
 import threading
 
@@ -75,6 +76,9 @@ class OSCManager:
             bool(s.gui_use_module),
             bool(s.gui_pyvrcft),
             bool(s.gui_vrc_native_face),
+            bool(s.gui_babble),
+            str(s.gui_babble_address).strip(),
+            int(s.gui_babble_port),
             str(s.gui_osc_address).strip(),
             int(s.gui_osc_receiver_port),
         )
@@ -126,6 +130,9 @@ class OSCManager:
             "gui_use_module",
             "gui_pyvrcft",
             "gui_vrc_native_face",
+            "gui_babble",
+            "gui_babble_address",
+            "gui_babble_port",
             "gui_osc_address",
             "gui_osc_receiver_port",
         }
@@ -174,6 +181,7 @@ class OSCSender:
         self.vrc_sender = VRChatOSCSender()
         self.module_sender = VRCFTModuleSender()
         self.pyvrcft_sender = PyVRCFTSender()
+        self.babble_sender = BabbleSender()
 
         self.vrc_client = None
         self.vrcft_client = None
@@ -204,13 +212,33 @@ class OSCSender:
                 )
                 use_pyvrcft = False
 
+        # Babble serves two receivers: Resonite's driver (eyes and mouth), and
+        # in the VRCFT module mode the VRCFT-Babble module (mouth only; eyes
+        # keep going to the ETVR module).
+        use_babble = bool(self.config.gui_babble)
+        babble_mouth_only = (
+            not use_babble and not use_pyvrcft and bool(self.config.gui_use_module)
+        )
+        if use_babble or babble_mouth_only:
+            try:
+                self.babble_sender.start(self.config, send_eyes=use_babble)
+            except Exception:  # noqa
+                logger.exception("Failed to start Babble sender")
+                use_babble = babble_mouth_only = False
+
         try:
             while not self.cancellation_event.is_set():
                 try:
                     osc_message: OSCMessage = self.msg_queue.get(block=True, timeout=0.1)
                     match osc_message.type:
                         case OSCMessageType.EYE_INFO:
-                            if use_pyvrcft:
+                            if use_babble:
+                                self.babble_sender.output_osc_info(
+                                    osc_message=osc_message,
+                                    main_config=self.main_config,
+                                    config=self.config,
+                                )
+                            elif use_pyvrcft:
                                 self.pyvrcft_sender.output_osc_info(
                                     osc_message=osc_message,
                                     main_config=self.main_config,
@@ -229,7 +257,13 @@ class OSCSender:
                             )
                         case OSCMessageType.EYEBROW_INFO:
                             eye_id, brow_val = osc_message.data
-                            if use_pyvrcft:
+                            if use_babble:
+                                self.babble_sender.output_eyebrow_info(
+                                    eye_id=eye_id,
+                                    brow_val=brow_val,
+                                    main_config=self.main_config,
+                                )
+                            elif use_pyvrcft:
                                 self.pyvrcft_sender.output_eyebrow_info(
                                     eye_id=eye_id,
                                     brow_val=brow_val,
@@ -251,6 +285,8 @@ class OSCSender:
         finally:
             if use_pyvrcft:
                 self.pyvrcft_sender.stop()
+            if use_babble or babble_mouth_only:
+                self.babble_sender.stop()
 
 
 class OSCReceiver:

@@ -518,6 +518,13 @@ class EyeTrackSettingsConfig(BaseModel):
     # pyVRCFT only: send VRChat's native face tracking (/tracking/face/v1) to
     # avatars that declare no VRCFT parameters in their OSC config.
     gui_vrc_native_face: bool = True
+    # Babble-compatible OSC output (osc/BabbleSender.py) for Resonite's
+    # built-in Babble driver. Exclusive with the VRChat modes. The VRCFT module
+    # mode also uses this address/port to send the mouth to the VRCFT-Babble
+    # module (both default to 8888).
+    gui_babble: bool = False
+    gui_babble_address: str = "127.0.0.1"
+    gui_babble_port: int = 8888
     gui_pupil_dilation: bool = False
     # Diagnostic mode: request EllSeg inference at camera rate. The background
     # worker drops stale frames when inference is slower, so NEXT never blocks.

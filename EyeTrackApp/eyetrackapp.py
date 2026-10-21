@@ -372,13 +372,21 @@ def main():
 
     osc_manager.start()
     def _lip_shared_frame():
-        """The pyVRCFT sender's shared tracking frame, or None. Resolved
+        """The active sender's shared tracking frame, or None. Resolved
         lazily: OSCManager rebuilds OSCSender (and the frame) when OSC
         settings change, so caching the object would go stale."""
         sender = getattr(osc_manager, "osc_sender", None)
-        if sender is None or not config.settings.gui_pyvrcft:
+        if sender is None:
             return None
-        return sender.pyvrcft_sender.data
+        s = config.settings
+        if s.gui_babble:
+            return sender.babble_sender.data
+        if s.gui_pyvrcft:
+            return sender.pyvrcft_sender.data
+        if s.gui_use_module:
+            # VRCFT module mode: the mouth goes to the VRCFT-Babble module.
+            return sender.babble_sender.data
+        return None
 
     # SRanipal lip tracking (self-contained; VFT camera + inference + OSC).
     # Created unconditionally so the settings checkbox works at runtime; the
@@ -401,6 +409,8 @@ def main():
                 "gui_lip_device",
                 "gui_lip_onnx_path",
                 "gui_pyvrcft",
+                "gui_babble",
+                "gui_use_module",
             }
             if not restart_keys.intersection(data):
                 return
