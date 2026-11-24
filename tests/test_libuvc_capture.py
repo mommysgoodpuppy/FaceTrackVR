@@ -132,75 +132,122 @@ def test_usb_identity_scan_matches_vendor_and_product(tmp_path):
     assert libuvc_capture._bsb2e_usb_attached(str(tmp_path)) is False
 
 
-def _mjpeg_frame(payload: bytes, fmt: int = libuvc_capture.UVC_FRAME_FORMAT_MJPEG):
-    buf = ctypes.create_string_buffer(payload)
-    frame = libuvc_capture._Frame()
-    frame.data = ctypes.cast(buf, ctypes.c_void_p)
-    frame.data_bytes = len(payload)
-    frame.frame_format = fmt
-    return frame
+def test_find_usb_device_path_reads_busnum_and_devnum(tmp_path):
+    bigeye = tmp_path / "3-2.1.2"
+    bigeye.mkdir()
+    (bigeye / "idVendor").write_text("35bd\n")
+    (bigeye / "idProduct").write_text("0202\n")
+    (bigeye / "busnum").write_text("3\n")
+    (bigeye / "devnum").write_text("5\n")
 
-
-def test_payload_extraction_copies_mjpeg_and_ignores_other_formats():
-    stream = libuvc_capture.LibuvcCapture()
-    assert stream._payload_from_frame(_mjpeg_frame(b"\xff\xd8first\xff\xd9")) == (
-        b"\xff\xd8first\xff\xd9"
+    assert (
+        libuvc_capture._find_usb_device_path(0x35BD, 0x0202, str(tmp_path))
+        == "/dev/bus/usb/003/005"
     )
-    assert stream.received_frames == 1
-
-    # 0 is UVC_FRAME_FORMAT_UNKNOWN and is never what the Bigeye streams.
-    assert stream._payload_from_frame(_mjpeg_frame(b"\x00\x01", fmt=0)) is None
-    assert stream.dropped_format_frames == 1
-
-    # A zero-length payload must not produce an empty frame.
-    assert stream._payload_from_frame(_mjpeg_frame(b"")) is None
+    assert libuvc_capture._find_usb_device_path(0x35BD, 0x0101, str(tmp_path)) is None
 
 
-class _FakeLib:
-    """Stands in for the loaded libuvc CDLL inside LibuvcCapture.read()."""
-
-    def __init__(self, frame, rc=0):
-        self._frame = frame
-        self._rc = rc
-        self.calls = []
-
-    def uvc_stream_get_frame(self, stream, frame_ref, timeout_us):
-        self.calls.append(timeout_us)
-        if self._rc == 0 and self._frame is not None:
-            out = ctypes.cast(
-                frame_ref, ctypes.POINTER(ctypes.POINTER(libuvc_capture._Frame))
-            )
-            out[0] = ctypes.pointer(self._frame)
-        return self._rc
+def test_frame_assembler_ignores_uvc_boundaries_inside_jpegs():
+    asm = libuvc_capture._UvcFrameAssembler()
+    # Captured failure: EOF/FID change in the JPEG, then EOI + SOI inside
+    # a later packet. Neither UVC flag is a reliable image boundary.
+    first = b"\xff\xd8first image\xff\xd9"
+    second = b"\xff\xd8second image\xff\xd9"
+    asm.feed_packet(bytes([12, 0x8c]) + bytes(10) + b"old tail" + first[:6])
+    asm.feed_packet(bytes([12, 0x8e]) + bytes(10) + first[6:9])
+    assert not asm.ready
+    asm.feed_packet(bytes([12, 0x8d]) + bytes(10) + first[9:] + second[:8])
+    assert asm.ready.popleft() == first
+    asm.feed_packet(bytes([12, 0x8f]) + bytes(10) + second[8:])
+    assert list(asm.ready) == [second]
+    assert asm.received_frames == 2
 
 
-def _stream_with_fake_lib(monkeypatch, lib):
+def test_frame_assembler_handles_split_markers_and_multiple_images():
+    asm = libuvc_capture._UvcFrameAssembler()
+    for body in [b"junk\xff", b"\xd8one\xff", b"\xd9\xff\xd8two\xff\xd9\xff\xd8three\xff\xd9"]:
+        asm.feed_packet(memoryview(bytes([2, 0x00]) + body))
+    assert list(asm.ready) == [b"\xff\xd8one\xff\xd9", b"\xff\xd8two\xff\xd9", b"\xff\xd8three\xff\xd9"]
+
+
+def test_frame_assembler_recovers_after_error_oversize_and_missing_eoi():
+    asm = libuvc_capture._UvcFrameAssembler(max_frame_bytes=32)
+    asm.feed_packet(bytes([2, 0x00]) + b"\xff\xd8partial")
+    asm.feed_packet(bytes([2, 0x40]) + b"bad")
+    asm.feed_packet(bytes([2, 0x40]) + b"still_bad")
+    asm.feed_packet(bytes([2, 0x02]) + b"tail\xff\xd9")
+    assert not asm.ready
+    assert asm.dropped_error_frames == 1
+
+    asm.feed_packet(bytes([2, 0x01]) + b"\xff\xd8" + b"x" * 20)
+    asm.feed_packet(bytes([2, 0x03]) + b"y" * 20)
+    assert not asm.ready
+    assert len(asm._buf) <= 1
+    assert asm.dropped_error_frames == 2
+
+    asm.feed_packet(bytes([2, 0x00]) + b"\xff\xd8no end")
+    good = b"\xff\xd8recovered\xff\xd9"
+    asm.feed_packet(bytes([2, 0x00]) + good)
+    assert list(asm.ready) == [good]
+    assert asm.dropped_error_frames == 3
+
+    asm.feed_packet(b"")
+    asm.feed_packet(b"\x01")
+    asm.feed_packet(bytes([99, 0x02]) + b"short")
+    asm.feed_packet(bytes([2, 0x00]) + b"x" * 100)
+    assert len(asm._buf) <= 1
+
+
+def test_real_jpegs_decode_despite_uvc_boundary_drift():
+    ok, encoded = cv2.imencode(".jpg", np.full((400, 800, 3), 128, np.uint8))
+    assert ok
+    jpeg = encoded.tobytes()
+    payload = b"old tail" + jpeg * 3
+    asm = libuvc_capture._UvcFrameAssembler()
+    for i, offset in enumerate(range(0, len(payload), 1012)):
+        # Deliberately unrelated FID/EOF flags, like the live camera.
+        asm.feed_packet(bytes([12, 0x8c | (i % 4)]) + bytes(10) + payload[offset:offset + 1012])
+    assert list(asm.ready) == [jpeg] * 3
+    for frame in asm.ready:
+        assert cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_COLOR).shape == (400, 800, 3)
+
+
+class _FakePoller:
+    def __init__(self, events):
+        self._events = list(events)
+        self.timeouts = []
+
+    def poll(self, timeout_ms):
+        self.timeouts.append(timeout_ms)
+        return self._events.pop(0) if self._events else []
+
+
+def test_read_returns_queued_frame_and_handles_timeout_and_disconnect(monkeypatch):
     stream = libuvc_capture.LibuvcCapture()
-    stream._stream = ctypes.c_void_p(1)
-    stream._streaming = True
-    monkeypatch.setattr(libuvc_capture, "_load_lib", lambda: (lib, None))
-    return stream
-
-
-def test_read_returns_the_payload_and_passes_the_timeout(monkeypatch):
-    lib = _FakeLib(_mjpeg_frame(b"\xff\xd8body\xff\xd9"))
-    stream = _stream_with_fake_lib(monkeypatch, lib)
-
-    assert stream.read(0.05) == b"\xff\xd8body\xff\xd9"
-    assert lib.calls == [50_000]
-
-
-def test_read_returns_none_on_timeout_and_without_a_stream(monkeypatch):
-    stream = _stream_with_fake_lib(monkeypatch, _FakeLib(None, rc=-50))
     assert stream.read(0.01) is None
 
-    idle = libuvc_capture.LibuvcCapture()
-    assert idle.read(0.01) is None
+    stream._fd = 99
+    stream._streaming = True
+    stream._poller = _FakePoller([])
+    stream._assembler.ready.append(b"\xff\xd8body\xff\xd9")
+
+    assert stream.read(0.05) == b"\xff\xd8body\xff\xd9"
+    # Timeout when poller returns no events.
+    assert stream.read(0.01) is None
+    assert len(stream._poller.timeouts) == 1
+
+    # Disconnect event raises LibuvcError so Camera tears down cleanly.
+    stream._poller = _FakePoller([[(99, libuvc_capture.select.POLLHUP)]])
+    with pytest.raises(libuvc_capture.LibuvcError):
+        stream.read(0.05)
 
 
-def test_read_returns_none_once_streaming_stops(monkeypatch):
-    stream = _stream_with_fake_lib(monkeypatch, _FakeLib(_mjpeg_frame(b"x")))
+def test_read_returns_none_once_streaming_stops():
+    stream = libuvc_capture.LibuvcCapture()
+    stream._fd = 99
     stream._streaming = False
+    stream._poller = _FakePoller([[(99, libuvc_capture.select.POLLOUT)]])
+    stream._assembler.ready.append(b"x")
 
     assert stream.read(0.01) is None
 
@@ -363,3 +410,41 @@ def test_push_failure_tears_down_the_stream(eyetrack_camera_config, eyetrack_set
     assert cam.camera_status == CameraState.DISCONNECTED
     assert cam._libuvc_stream is None
     assert stream.closed is True
+
+
+@pytest.mark.parametrize("payload", [None, b"not a jpeg"])
+def test_libuvc_reconnects_after_sustained_invalid_frames(
+    monkeypatch, eyetrack_camera_config, eyetrack_settings_config, payload
+):
+    cam = _camera(eyetrack_camera_config, eyetrack_settings_config, BIGEYE_BY_ID)
+    stream = _FakeStream(frames=[payload] * 3)
+    cam._libuvc_stream = stream
+    clock = [10.0]
+    monkeypatch.setattr(camera_module.time, "monotonic", lambda: clock[0])
+    cam.get_libuvc_camera_picture(True)
+    assert not stream.closed
+    clock[0] = 11.9
+    cam.get_libuvc_camera_picture(True)
+    assert not stream.closed
+    clock[0] = 12.1
+    cam.get_libuvc_camera_picture(True)
+    assert stream.closed
+    assert cam._libuvc_stream is None
+    assert cam.camera_status == CameraState.DISCONNECTED
+
+
+def test_valid_libuvc_frame_resets_recovery_deadline(
+    monkeypatch, eyetrack_camera_config, eyetrack_settings_config
+):
+    cam = _camera(eyetrack_camera_config, eyetrack_settings_config, BIGEYE_BY_ID)
+    ok, encoded = cv2.imencode(".jpg", np.full((400, 800, 3), 128, np.uint8))
+    assert ok
+    stream = _FakeStream(frames=[None, encoded.tobytes(), None, None])
+    cam._libuvc_stream = stream
+    clock = [10.0]
+    monkeypatch.setattr(camera_module.time, "monotonic", lambda: clock[0])
+    for instant in [10.0, 11.0, 12.5, 14.0]:
+        clock[0] = instant
+        cam.get_libuvc_camera_picture(True)
+    assert not stream.closed
+    assert cam.frame_number == 1

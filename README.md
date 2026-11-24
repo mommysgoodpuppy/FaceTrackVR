@@ -35,28 +35,21 @@ extent as the upstream project.
 The Bigeye eye camera (USB `35bd:0202`) advertises an MJPEG 800x400@90 format
 that the kernel `uvcvideo` driver cannot stream: `VIDIOC_REQBUFS` fails with
 `Invalid argument`, so V4L2 capture — and with it OpenCV's V4L2 backend — never
-starts. FTVR detects these cameras and captures them through userspace
-[libuvc](https://github.com/libuvc/libuvc) instead. No setting change is needed:
-select the Bigeye camera as usual and the libuvc backend is used automatically.
-On Windows the camera keeps using DirectShow.
+starts. FTVR detects these cameras and captures them through a built-in
+userspace USB (`usbdevfs`) UVC backend with no extra library dependencies. No
+setting change is needed: select the Bigeye camera as usual and the userspace
+backend is used automatically. On Windows the camera keeps using DirectShow.
 
-Linux needs two things:
+Linux only needs udev rules granting access to the camera, for example
+`/etc/udev/rules.d/99-bigeye.rules`:
 
-- the `libuvc` shared library at runtime (`libuvc` on Arch/Fedora, `libuvc0`
-  on Debian/Ubuntu);
-- udev rules granting access to the camera, for example
-  `/etc/udev/rules.d/99-bigeye.rules`:
+```
+SUBSYSTEM=="usb", ATTR{idVendor}=="35bd", ATTR{idProduct}=="0202", MODE="0666", GROUP="video"
+SUBSYSTEM=="video4linux", ATTR{idVendor}=="35bd", ATTR{idProduct}=="0202", MODE="0666", GROUP="video"
+```
 
-  ```
-  SUBSYSTEM=="usb", ATTR{idVendor}=="35bd", ATTR{idProduct}=="0202", MODE="0666", GROUP="video"
-  SUBSYSTEM=="video4linux", ATTR{idVendor}=="35bd", ATTR{idProduct}=="0202", MODE="0666", GROUP="video"
-  ```
-
-  then reload with `sudo udevadm control --reload-rules && sudo udevadm trigger`
-  and replug the headset. Adjust `GROUP` to a group your user belongs to.
-
-If libuvc is missing, FTVR logs a warning and falls back to V4L2, which fails
-for this camera.
+then reload with `sudo udevadm control --reload-rules && sudo udevadm trigger`
+and replug the headset. Adjust `GROUP` to a group your user belongs to.
 
 ## Experimental builds
 

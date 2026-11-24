@@ -93,6 +93,7 @@ _UVC_REQUESTED_FPS = 120.0
 # polling) keeps the loop off the GIL, which the libuvc callback thread and the
 # tracking thread both need.
 _LIBUVC_FRAME_WAIT = 0.05
+_LIBUVC_INVALID_FRAME_TIMEOUT = 2.0
 # Reconnect backoff for network sources (seconds). Each failed reopen blocks the
 # capture thread in native cv2 for up to the open-timeout, so retries are spaced with
 # an exponential backoff (min..max) instead of hammering a dead host every loop tick,
@@ -167,6 +168,7 @@ class Camera:
         # Userspace libuvc backend for Bigscreen Bigeye (BSB2E) cameras, whose
         # V4L2 path is broken on Linux. None for every other source.
         self._libuvc_stream = None
+        self._libuvc_invalid_since = None
         # (capture_source, resolved /dev path or None) memo for BSB2E detection,
         # which reads sysfs and must not run on every loop tick.
         self._libuvc_source_cache: tuple[object, str | None] | None = None
@@ -245,6 +247,7 @@ class Camera:
         """Tear down the userspace libuvc backend, if one is active."""
         stream = self._libuvc_stream
         self._libuvc_stream = None
+        self._libuvc_invalid_since = None
         if stream is not None:
             try:
                 stream.close()
@@ -731,14 +734,19 @@ class Camera:
             return
         try:
             jpeg = stream.read(_LIBUVC_FRAME_WAIT)
-            if jpeg is None:
-                return
-            image = cv2.imdecode(
+            image = None if jpeg is None else cv2.imdecode(
                 np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR
             )
             if image is None:
-                logger.warning("BSB2E libuvc: dropped corrupted JPEG frame")
+                now = time.monotonic()
+                if self._libuvc_invalid_since is None:
+                    self._libuvc_invalid_since = now
+                    if jpeg is not None:
+                        logger.warning("BSB2E libuvc: dropped corrupted JPEG frame")
+                elif now - self._libuvc_invalid_since >= _LIBUVC_INVALID_FRAME_TIMEOUT:
+                    raise RuntimeError("no decodable BSB2E frames for 2 seconds")
                 return
+            self._libuvc_invalid_since = None
             image = self._downscale_wide_frame(image)
             self.frame_number += 1
             # len(jpeg) is the compressed payload pulled off the USB pipe, so the
