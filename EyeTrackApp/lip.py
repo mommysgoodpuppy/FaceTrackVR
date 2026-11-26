@@ -50,6 +50,8 @@ except ImportError as e:  # pragma: no cover
 class MouthCamera:
     """Local camera capture with device-specific setup when required."""
 
+    START_TIMEOUT_SECONDS = 6.0
+
     def __init__(self, device="/dev/video2"):
         self.device = device
         self._stop = threading.Event()
@@ -60,6 +62,13 @@ class MouthCamera:
         self._cond = threading.Condition()
         self._thread: threading.Thread | None = None
         self.error: str | None = None
+        self._init_error: str | None = None
+
+    @staticmethod
+    def _is_xu_timeout(exc: BaseException) -> bool:
+        return isinstance(exc, TimeoutError) or isinstance(
+            exc.__cause__, TimeoutError
+        )
 
     @staticmethod
     def _is_raw_vft_frame(frame: np.ndarray) -> bool:
@@ -103,20 +112,31 @@ class MouthCamera:
             try:
                 self._stream_controller.enable()
             except Exception as e:
-                self.error = f"camera initialization failed: {e}"
-                logger.error(self.error)
-                try:
-                    # A failed handshake can occur after some registers were
-                    # written. Attempt shutdown even when enable() did not get
-                    # far enough to set the controller's enabled flag.
-                    self._stream_controller.set_enabled(False)
-                except Exception:
+                if self._is_xu_timeout(e):
+                    # The Vive Facial Tracker's UVC XU MCU can wedge returning
+                    # 0x55 while the sensor and IR LEDs are already streaming.
+                    # Continue to capture and only fail if no valid frames arrive.
+                    self._init_error = f"camera initialization failed: {e}"
                     logger.warning(
-                        "Camera cleanup after failed initialization also failed",
-                        exc_info=True,
+                        "Camera stream control timed out (%s); checking "
+                        "whether the camera is already streaming",
+                        e,
                     )
-                self._ready.set()
-                return
+                else:
+                    self.error = f"camera initialization failed: {e}"
+                    logger.error(self.error)
+                    try:
+                        # A failed handshake can occur after some registers were
+                        # written. Attempt shutdown even when enable() did not get
+                        # far enough to set the controller's enabled flag.
+                        self._stream_controller.set_enabled(False)
+                    except Exception:
+                        logger.warning(
+                            "Camera cleanup after failed initialization also failed",
+                            exc_info=True,
+                        )
+                    self._ready.set()
+                    return
         if sys.platform == "win32" and isinstance(open_source, int):
             backend = cv2.CAP_DSHOW
         elif (
@@ -163,7 +183,7 @@ class MouthCamera:
                 cap.set(cv2.CAP_PROP_FPS, 60)
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             if not cap.isOpened():
-                self.error = f"cannot open {self.device}"
+                self.error = self._init_error or f"cannot open {self.device}"
                 logger.error(self.error)
                 self._ready.set()
                 return
@@ -188,6 +208,7 @@ class MouthCamera:
                     self._frame = frame
                     self._frame_id += 1
                     self._cond.notify_all()
+                self._init_error = None
                 self._ready.set()
         finally:
             if cap is not None:
@@ -204,10 +225,11 @@ class MouthCamera:
         self._stop.clear()
         self._ready.clear()
         self.error = None
+        self._init_error = None
         self._thread = threading.Thread(target=self._loop, daemon=True, name="MouthCapture")
         self._thread.start()
-        if not self._ready.wait(timeout=3.0):
-            self.error = f"timed out starting {self.device}"
+        if not self._ready.wait(timeout=self.START_TIMEOUT_SECONDS):
+            self.error = self._init_error or f"timed out starting {self.device}"
             logger.error(self.error)
             return False
         return self.error is None
@@ -226,10 +248,17 @@ class MouthCamera:
 
     def stop(self):
         self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=2.0)
             self._thread = None
-        if self._stream_controller is not None:
+        # Only touch the stream controller from the caller thread after the
+        # capture thread has exited; concurrent UVC XU ioctls during startup or
+        # capture teardown can wedge the Vive Facial Tracker firmware.
+        if (
+            self._stream_controller is not None
+            and (thread is None or not thread.is_alive())
+        ):
             try:
                 self._stream_controller.disable()
             except Exception as e:

@@ -272,3 +272,113 @@ def test_mouth_camera_disconnect_label_saves_empty_device():
     values = module.get_values_map()
 
     assert values[module.gui_lip_device] == ""
+
+
+def test_mouth_camera_recovers_when_xu_times_out_but_sensor_streams(monkeypatch):
+    import lip
+
+    class WedgedController:
+        def __init__(self):
+            self.enabled = False
+            self.disable_calls = 0
+
+        def enable(self):
+            raise TimeoutError("XU timeout")
+
+        def set_enabled(self, enabled):
+            raise AssertionError("should not poke wedged XU with set_enabled(False)")
+
+        def disable(self):
+            self.disable_calls += 1
+
+    class FakeCapture:
+        def __init__(self, _source, _backend):
+            self.released = False
+
+        def set(self, _prop, _value):
+            return True
+
+        def isOpened(self):
+            return True
+
+        def read(self):
+            return True, np.zeros((400, 400, 2), dtype=np.uint8)
+
+        def release(self):
+            self.released = True
+
+    controller = WedgedController()
+    monkeypatch.setattr(lip, "stream_controller_for", lambda *a, **kw: controller)
+    monkeypatch.setattr(lip.cv2, "VideoCapture", FakeCapture)
+    monkeypatch.setattr(lip.sys, "platform", "linux")
+
+    cam = MouthCamera("/dev/video0")
+    assert cam.start() is True
+    assert cam.error is None
+    frame, frame_id = cam.read(timeout=0.1, last_id=0)
+    assert frame is not None and frame_id >= 1
+    cam.stop()
+
+
+def test_mouth_camera_reports_xu_timeout_when_no_frames_arrive(monkeypatch):
+    import lip
+
+    class WedgedController:
+        def __init__(self):
+            self.enabled = False
+
+        def enable(self):
+            raise TimeoutError("XU timeout")
+
+        def disable(self):
+            pass
+
+    class SilentCapture:
+        def __init__(self, _source, _backend):
+            pass
+
+        def set(self, _prop, _value):
+            return True
+
+        def isOpened(self):
+            return True
+
+        def read(self):
+            return False, None
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(lip, "stream_controller_for", lambda *a, **kw: WedgedController())
+    monkeypatch.setattr(lip.cv2, "VideoCapture", SilentCapture)
+    monkeypatch.setattr(lip.sys, "platform", "linux")
+
+    cam = MouthCamera("/dev/video0")
+    cam.START_TIMEOUT_SECONDS = 0.1
+    assert cam.start() is False
+    assert cam.error == "camera initialization failed: XU timeout"
+    cam.stop()
+
+
+def test_mouth_camera_stop_skips_concurrent_disable_while_thread_is_alive():
+    class StuckThread:
+        def join(self, timeout=None):
+            pass
+
+        def is_alive(self):
+            return True
+
+    class SpyController:
+        def __init__(self):
+            self.disable_calls = 0
+
+        def disable(self):
+            self.disable_calls += 1
+
+    cam = MouthCamera("/dev/video0")
+    cam._thread = StuckThread()
+    cam._stream_controller = SpyController()
+
+    cam.stop()
+
+    assert cam._stream_controller.disable_calls == 0

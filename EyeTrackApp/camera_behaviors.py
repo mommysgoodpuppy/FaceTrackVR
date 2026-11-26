@@ -4,9 +4,13 @@ import ctypes
 import os
 import re
 import sys
+import threading
 import time
 from collections.abc import Iterable
 from functools import lru_cache
+
+
+_HTC_XU_LOCK = threading.Lock()
 
 
 _VIDEO_INTERFACE_RE = re.compile(r"^(.*)-video-index(\d+)$")
@@ -144,32 +148,33 @@ class HtcStreamController:
         self.enabled = False
 
     def set_enabled(self, enabled: bool) -> None:
-        fd = os.open(self.device, os.O_RDWR)
-        try:
-            size_bytes = _xu_query(fd, _XU_GET_LEN, _XU_SELECTOR, 2)
-            size = size_bytes[0] | (size_bytes[1] << 8)
-            if size not in (384, 64):
-                raise RuntimeError(f"unexpected XU buffer size {size}")
+        with _HTC_XU_LOCK:
+            fd = os.open(self.device, os.O_RDWR)
+            try:
+                size_bytes = _xu_query(fd, _XU_GET_LEN, _XU_SELECTOR, 2)
+                size = size_bytes[0] | (size_bytes[1] << 8)
+                if size not in (384, 64):
+                    raise RuntimeError(f"unexpected XU buffer size {size}")
 
-            def set_cur(payload):
-                _xu_query(fd, _XU_SET_CUR, _XU_SELECTOR, payload)
-                deadline = time.time() + 1.0
-                while time.time() < deadline:
-                    result = _xu_query(fd, _XU_GET_CUR, _XU_SELECTOR, size)
-                    if result[0] == 0x55:
-                        time.sleep(0.001)
-                    elif result[0] == 0x56:
-                        if result[1:17] != bytes(payload[:16]):
-                            raise RuntimeError("XU response mismatch")
-                        return
-                    else:
-                        raise RuntimeError(f"bad XU response {result[0]:#x}")
-                raise TimeoutError("XU timeout")
+                def set_cur(payload):
+                    _xu_query(fd, _XU_SET_CUR, _XU_SELECTOR, payload)
+                    deadline = time.time() + 1.0
+                    while time.time() < deadline:
+                        result = _xu_query(fd, _XU_GET_CUR, _XU_SELECTOR, size)
+                        if result[0] == 0x55:
+                            time.sleep(0.001)
+                        elif result[0] == 0x56:
+                            if result[1:17] != bytes(payload[:16]):
+                                raise RuntimeError("XU response mismatch")
+                            return
+                        else:
+                            raise RuntimeError(f"bad XU response {result[0]:#x}")
+                    raise TimeoutError("XU timeout")
 
-            _run_htc_handshake(size, enabled, set_cur)
-            self.enabled = enabled
-        finally:
-            os.close(fd)
+                _run_htc_handshake(size, enabled, set_cur)
+                self.enabled = enabled
+            finally:
+                os.close(fd)
 
     def enable(self) -> None:
         self.set_enabled(True)
@@ -392,8 +397,9 @@ class WindowsHtcStreamController:
                 f"HTC extension-unit handshake failed: {last_error}"
             ) from last_error
 
-        self._with_control(run)
-        self.enabled = enabled
+        with _HTC_XU_LOCK:
+            self._with_control(run)
+            self.enabled = enabled
 
     def enable(self) -> None:
         self.set_enabled(True)
